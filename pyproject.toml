@@ -1,0 +1,45 @@
+[project]
+name = "northgate"
+version = "0.1.0"
+description = "Provider-neutral AI gateway for observability, policy, and routing."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.16.0,<2.0.0",
+    "asyncpg>=0.30.0,<1.0.0",
+    "cryptography>=45.0.0,<47.0.0",
+    "fastapi>=0.116.0,<1.0.0",
+    "httpx>=0.28.0,<1.0.0",
+    "pydantic-settings>=2.10.0,<3.0.0",
+    "redis>=5.0.0,<7.0.0",
+    "sqlalchemy[asyncio]>=2.0.0,<3.0.0",
+    "structlog>=25.0.0,<26.0.0",
+    "uvicorn[standard]>=0.35.0,<1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0,<9.0.0",
+    "ruff>=0.12.0,<1.0.0",
+]
+
+[project.scripts]
+northgate = "northgate.main:main"
+northgate-bootstrap = "northgate.bootstrap:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.uv.build-backend]
+module-name = "northgate"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"

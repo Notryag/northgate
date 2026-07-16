@@ -1,0 +1,72 @@
+services:
+  northgate:
+    build: .
+    environment:
+      NORTHGATE_ENVIRONMENT: development
+      NORTHGATE_HOST: 0.0.0.0
+      NORTHGATE_PORT: 8080
+      NORTHGATE_DATABASE_URL: postgresql+asyncpg://northgate:northgate@postgres:5432/northgate
+      NORTHGATE_REDIS_URL: redis://redis:6379/0
+      NORTHGATE_ROUTING_SOURCE: ${NORTHGATE_ROUTING_SOURCE:-configuration}
+      NORTHGATE_USAGE_PERSISTENCE_ENABLED: ${NORTHGATE_USAGE_PERSISTENCE_ENABLED:-false}
+      NORTHGATE_GATEWAY_SLUG: ${NORTHGATE_GATEWAY_SLUG:-default}
+      NORTHGATE_ALLOWED_METADATA_KEYS: ${NORTHGATE_ALLOWED_METADATA_KEYS:-tenant_id,user_id,run_id,environment}
+      NORTHGATE_REQUEST_LIMIT_PER_MINUTE: ${NORTHGATE_REQUEST_LIMIT_PER_MINUTE:-}
+      NORTHGATE_CONCURRENCY_LIMIT: ${NORTHGATE_CONCURRENCY_LIMIT:-}
+      NORTHGATE_TOKEN_LIMIT_PER_DAY: ${NORTHGATE_TOKEN_LIMIT_PER_DAY:-}
+      NORTHGATE_APPLICATION_KEY_SHA256: ${NORTHGATE_APPLICATION_KEY_SHA256:-}
+      NORTHGATE_PROVIDER_BASE_URL: ${NORTHGATE_PROVIDER_BASE_URL:-https://api.openai.com/v1}
+      NORTHGATE_PROVIDER_API_KEY: ${NORTHGATE_PROVIDER_API_KEY:-}
+      NORTHGATE_CREDENTIAL_ENCRYPTION_KEY: ${NORTHGATE_CREDENTIAL_ENCRYPTION_KEY:-}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready')"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: northgate
+      POSTGRES_USER: northgate
+      POSTGRES_PASSWORD: northgate
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - northgate_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U northgate -d northgate"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - northgate_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  northgate_postgres_data:
+  northgate_redis_data:
+
+networks:
+  default:
+    name: northgate-dev
