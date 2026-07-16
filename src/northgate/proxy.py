@@ -3,6 +3,7 @@ import json
 import math
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from hashlib import sha256
 from hmac import compare_digest
 
@@ -18,6 +19,7 @@ from northgate.policy import (
     PolicyRejectedError,
     PolicyUnavailableError,
 )
+from northgate.pricing import PriceQuote, PricingRepository, configured_price
 from northgate.routing import (
     DatabaseRouteResolver,
     ForbiddenGatewayError,
@@ -26,7 +28,12 @@ from northgate.routing import (
     RouteUnavailableError,
     configured_route,
 )
-from northgate.usage import DuplicateRequestError, UsageAccumulator, UsageRecorder
+from northgate.usage import (
+    DuplicateRequestError,
+    UsageAccumulator,
+    UsageRecorder,
+    UsageResult,
+)
 
 logger = structlog.get_logger()
 
@@ -117,7 +124,9 @@ async def _settle_safely(
     status_code: int | None,
     provider_request_id: str | None,
     started_at: float,
-    accumulator: UsageAccumulator,
+    usage: UsageResult,
+    cost_microusd: int | None,
+    first_token_ms: int | None,
 ) -> None:
     try:
         await recorder.settle(
@@ -126,8 +135,9 @@ async def _settle_safely(
             status_code=status_code,
             provider_request_id=provider_request_id,
             latency_ms=round((time.perf_counter() - started_at) * 1000),
-            first_token_ms=accumulator.first_token_ms,
-            usage=accumulator.result(),
+            first_token_ms=first_token_ms,
+            usage=usage,
+            cost_microusd=cost_microusd,
         )
     except Exception:
         await logger.aexception("usage_settlement_failed", northgate_request_id=request_id)
@@ -141,6 +151,7 @@ async def _response_body(
     started_at: float,
     policy_engine: PolicyEngine | None,
     policy_lease: PolicyLease | None,
+    price: PriceQuote | None,
 ) -> AsyncIterator[bytes]:
     accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
     outcome = "succeeded" if response.status_code < 400 else "provider_error"
@@ -160,6 +171,12 @@ async def _response_body(
         raise
     finally:
         await response.aclose()
+        usage = accumulator.result()
+        cost_microusd = (
+            price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
+            if price is not None
+            else None
+        )
         if recorder is not None:
             settlement = asyncio.create_task(
                 _settle_safely(
@@ -169,7 +186,9 @@ async def _response_body(
                     status_code=response.status_code,
                     provider_request_id=response.headers.get("x-request-id"),
                     started_at=started_at,
-                    accumulator=accumulator,
+                    usage=usage,
+                    cost_microusd=cost_microusd,
+                    first_token_ms=accumulator.first_token_ms,
                 )
             )
             try:
@@ -177,9 +196,8 @@ async def _response_body(
             except asyncio.CancelledError:
                 pass
         if policy_engine is not None and policy_lease is not None:
-            result = accumulator.result()
             settlement = asyncio.create_task(
-                policy_engine.settle(policy_lease, result.total_tokens)
+                policy_engine.settle(policy_lease, usage.total_tokens, cost_microusd)
             )
             try:
                 await asyncio.shield(settlement)
@@ -222,12 +240,12 @@ def _request_metadata(request: Request, route: ResolvedRoute) -> dict[str, str] 
     return metadata
 
 
-def _estimated_tokens(body: bytes, settings: Settings) -> int:
+def _estimated_tokens(body: bytes, settings: Settings) -> tuple[int, int]:
     prompt_estimate = math.ceil(len(body) / 3)
     try:
         payload = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return prompt_estimate + settings.policy_default_max_output_tokens
+        return prompt_estimate, settings.policy_default_max_output_tokens
     configured_max = payload.get("max_completion_tokens", payload.get("max_tokens"))
     output_estimate = (
         configured_max
@@ -236,7 +254,7 @@ def _estimated_tokens(body: bytes, settings: Settings) -> int:
         and configured_max > 0
         else settings.policy_default_max_output_tokens
     )
-    return prompt_estimate + output_estimate
+    return prompt_estimate, output_estimate
 
 
 async def _resolve_route(
@@ -308,6 +326,29 @@ async def proxy_chat_completions(
         )
 
     body = await request.body()
+    model = _request_model(body)
+    pricing_repository: PricingRepository | None = request.app.state.pricing_repository
+    if settings.routing_source == "database" and pricing_repository is not None and model:
+        price = await pricing_repository.resolve(route.provider, model, datetime.now(UTC))
+    else:
+        price = configured_price(settings)
+    spend_limited = (
+        route.policy.daily_spend_microusd is not None
+        or route.policy.monthly_spend_microusd is not None
+    )
+    if spend_limited and price is None:
+        return _error(
+            request,
+            status_code=503,
+            code="PRICING_UNAVAILABLE",
+            message="Model pricing is unavailable",
+            retryable=False,
+        )
+
+    estimated_input_tokens, estimated_output_tokens = _estimated_tokens(body, settings)
+    estimated_cost_microusd = (
+        price.cost(estimated_input_tokens, estimated_output_tokens) if price is not None else 0
+    )
     policy_engine: PolicyEngine | None = request.app.state.policy_engine
     policy_lease: PolicyLease | None = None
     if route.policy.enabled:
@@ -324,7 +365,8 @@ async def proxy_chat_completions(
                 gateway_key=str(route.gateway_id or gateway_slug),
                 request_id=request_id,
                 limits=route.policy,
-                estimated_tokens=_estimated_tokens(body, settings),
+                estimated_tokens=estimated_input_tokens + estimated_output_tokens,
+                estimated_cost_microusd=estimated_cost_microusd,
             )
         except PolicyRejectedError as exc:
             return _error(
@@ -350,12 +392,13 @@ async def proxy_chat_completions(
             await recorder.start(
                 request_id=request_id,
                 route=route,
-                model=_request_model(body),
+                model=model,
                 request_metadata=request_metadata,
+                price_id=price.price_id if price is not None else None,
             )
         except DuplicateRequestError:
             if policy_engine is not None and policy_lease is not None:
-                await policy_engine.settle(policy_lease, 0)
+                await policy_engine.settle(policy_lease, 0, 0)
             return _error(
                 request,
                 status_code=409,
@@ -365,7 +408,7 @@ async def proxy_chat_completions(
             )
         except Exception:
             if policy_engine is not None and policy_lease is not None:
-                await policy_engine.settle(policy_lease, 0)
+                await policy_engine.settle(policy_lease, 0, 0)
             await logger.aexception("usage_record_start_failed")
             return _error(
                 request,
@@ -395,7 +438,9 @@ async def proxy_chat_completions(
                 status_code=504,
                 provider_request_id=None,
                 started_at=started_at,
-                accumulator=UsageAccumulator("", started_at),
+                usage=UsageResult(),
+                cost_microusd=None,
+                first_token_ms=None,
             )
         if policy_engine is not None and policy_lease is not None:
             await policy_engine.settle(policy_lease, None)
@@ -415,7 +460,9 @@ async def proxy_chat_completions(
                 status_code=502,
                 provider_request_id=None,
                 started_at=started_at,
-                accumulator=UsageAccumulator("", started_at),
+                usage=UsageResult(),
+                cost_microusd=None,
+                first_token_ms=None,
             )
         if policy_engine is not None and policy_lease is not None:
             await policy_engine.settle(policy_lease, None)
@@ -435,6 +482,7 @@ async def proxy_chat_completions(
             started_at=started_at,
             policy_engine=policy_engine,
             policy_lease=policy_lease,
+            price=price,
         ),
         status_code=response.status_code,
         headers=_downstream_headers(

@@ -27,12 +27,10 @@ to the smallest relevant set of documents.
 
 ## Project status
 
-Status: M1 transparent proxy complete; M2 limits and analytics next
+Status: M2 limits and analytics complete; M3 routing and reliability next
 
-The transparent OpenAI-compatible proxy milestone is complete with streaming,
-application keys, encrypted provider credentials, and durable usage records.
-Redis-backed policy limits and analytics are next. See
-[docs/roadmap.md](docs/roadmap.md).
+The transparent proxy, Redis-backed limits, spend accounting, analytics APIs,
+and React operator console are implemented. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Development
 
@@ -96,6 +94,8 @@ Optional gateway limits are persisted by the same bootstrap command:
 NORTHGATE_REQUEST_LIMIT_PER_MINUTE=60
 NORTHGATE_CONCURRENCY_LIMIT=10
 NORTHGATE_TOKEN_LIMIT_PER_DAY=1000000
+NORTHGATE_DAILY_SPEND_LIMIT_MICROUSD=5000000
+NORTHGATE_MONTHLY_SPEND_LIMIT_MICROUSD=100000000
 ```
 
 Token capacity is reserved before forwarding. The estimate is request UTF-8
@@ -103,6 +103,30 @@ bytes divided by three plus `max_completion_tokens`/`max_tokens`, or 4096 when
 the request omits an output cap. Northgate settles the reservation to provider-
 reported usage exactly once by request ID. When usage is missing after an
 ambiguous provider failure, the conservative reservation remains charged.
+
+Spend limits require a versioned price. Bootstrap can establish the initial
+price version using `NORTHGATE_PRICE_PROVIDER`, `NORTHGATE_PRICE_MODEL`, and the
+input/output `*_PRICE_MICROUSD_PER_MILLION` values. One US dollar is 1,000,000
+micro-USD.
+
+Usage analytics require a separate operator key digest:
+
+```text
+GET /api/v1/usage/summary
+GET /api/v1/usage/timeseries?interval=hour
+Authorization: Bearer <operator key>
+```
+
+Application keys cannot call operator analytics endpoints.
+
+The React operator console is available at `/console`. For frontend
+development with API requests proxied to the local service:
+
+```sh
+cd apps/console
+npm ci
+npm run dev
+```
 
 `northgate-bootstrap` is idempotent for the default organization, project,
 gateway, key, credential, and route. It reads secrets from the environment,

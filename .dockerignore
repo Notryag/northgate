@@ -6,7 +6,8 @@
 .venv/
 docs/
 tests/
+apps/console/node_modules/
+apps/console/dist/
 __pycache__/
 *.egg-info/
 *.py[cod]
-

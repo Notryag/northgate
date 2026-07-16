@@ -1,3 +1,12 @@
+FROM node:22-alpine AS console-build
+
+WORKDIR /console
+
+COPY apps/console/package.json apps/console/package-lock.json ./
+RUN npm ci
+COPY apps/console ./
+RUN npm run build
+
 FROM python:3.11-slim AS build
 
 ARG UV_VERSION=0.11.28
@@ -22,6 +31,7 @@ FROM python:3.11-slim
 
 ENV PATH=/app/.venv/bin:$PATH \
     HOME=/home/northgate \
+    NORTHGATE_CONSOLE_DIRECTORY=/app/console_dist \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
@@ -34,10 +44,10 @@ RUN groupadd --system northgate \
 COPY --from=build --chown=northgate:northgate /app/.venv ./.venv
 COPY --chown=northgate:northgate alembic.ini ./alembic.ini
 COPY --chown=northgate:northgate migrations ./migrations
+COPY --from=console-build --chown=northgate:northgate /console/dist ./console_dist
 
 USER northgate
 
 EXPOSE 8080
 
 CMD ["northgate"]
-

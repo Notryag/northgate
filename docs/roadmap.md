@@ -56,13 +56,22 @@ Exit criteria:
 
 ## M2: Limits and analytics
 
-Status: in progress
+Status: complete (2026-07-16)
 
 Implemented so far:
 
 - Atomic Redis admission for per-minute requests, active concurrency, and daily tokens.
 - Expiring per-request concurrency leases with renewal during long streams.
 - Token reservation before forwarding and exactly-once adjustment to reported usage.
+- Versioned per-model pricing with atomic daily and monthly spend reservations.
+- Operator-authenticated usage summary and hourly/daily time-series APIs.
+- React operator dashboard for requests, tokens, cost, latency, errors, and usage buckets.
+
+Verification:
+
+- Parallel requests cannot exceed configured request or concurrency admission bounds.
+- Token and spend reservations settle exactly once to provider-reported usage.
+- Analytics summary totals reconcile with the underlying request records.
 
 Deliverables:
 
@@ -78,6 +87,8 @@ Exit criteria:
 - Analytics totals reconcile with immutable request records.
 
 ## M3: Routing and reliability
+
+Status: next
 
 Deliverables:
 

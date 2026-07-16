@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     DateTime,
     ForeignKey,
     Integer,
@@ -102,6 +103,20 @@ class GatewayPolicy(TimestampMixin, Base):
     requests_per_minute: Mapped[int | None] = mapped_column(Integer)
     concurrent_requests: Mapped[int | None] = mapped_column(Integer)
     tokens_per_day: Mapped[int | None] = mapped_column(Integer)
+    daily_spend_microusd: Mapped[int | None] = mapped_column(BigInteger)
+    monthly_spend_microusd: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class ModelPrice(TimestampMixin, Base):
+    __tablename__ = "model_prices"
+    __table_args__ = (UniqueConstraint("provider", "model", "effective_from"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    provider: Mapped[str] = mapped_column(String(40), index=True)
+    model: Mapped[str] = mapped_column(String(200), index=True)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    input_microusd_per_million: Mapped[int] = mapped_column(BigInteger)
+    output_microusd_per_million: Mapped[int] = mapped_column(BigInteger)
 
 
 class RequestRecord(Base):
@@ -118,6 +133,10 @@ class RequestRecord(Base):
     provider: Mapped[str] = mapped_column(String(40))
     model: Mapped[str | None] = mapped_column(String(200))
     request_metadata: Mapped[dict[str, str] | None] = mapped_column(JSON)
+    price_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_prices.id", ondelete="SET NULL")
+    )
+    cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
     outcome: Mapped[str] = mapped_column(String(40), default="started")
     http_status: Mapped[int | None] = mapped_column(Integer)
     provider_request_id: Mapped[str | None] = mapped_column(String(200))

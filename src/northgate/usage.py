@@ -2,6 +2,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 import structlog
 from sqlalchemy import update
@@ -91,6 +92,7 @@ class UsageRecorder:
         route: ResolvedRoute,
         model: str | None,
         request_metadata: dict[str, str],
+        price_id: UUID | None,
     ) -> None:
         async with self.database.sessions() as session:
             session.add(
@@ -102,6 +104,7 @@ class UsageRecorder:
                     provider=route.provider,
                     model=model,
                     request_metadata=request_metadata or None,
+                    price_id=price_id,
                     outcome="started",
                 )
             )
@@ -121,6 +124,7 @@ class UsageRecorder:
         latency_ms: int,
         first_token_ms: int | None,
         usage: UsageResult,
+        cost_microusd: int | None,
     ) -> None:
         async with self.database.sessions() as session:
             await session.execute(
@@ -136,6 +140,7 @@ class UsageRecorder:
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
                     total_tokens=usage.total_tokens,
+                    cost_microusd=cost_microusd,
                     latency_ms=latency_ms,
                     first_token_ms=first_token_ms,
                     completed_at=datetime.now(UTC),

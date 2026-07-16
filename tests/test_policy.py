@@ -74,6 +74,42 @@ async def test_atomic_admission_and_idempotent_token_settlement() -> None:
         day = datetime.now(UTC).strftime("%Y%m%d")
         used = await redis.hget(f"northgate:policy:{{token-test}}:tokens:{day}", "used")
         assert used == b"20"
+
+        spend_limits = PolicyLimits(
+            daily_spend_microusd=35,
+            monthly_spend_microusd=50,
+        )
+        spend_first = await engine.admit(
+            gateway_key="spend-test",
+            request_id="req_spend_1",
+            limits=spend_limits,
+            estimated_tokens=0,
+            estimated_cost_microusd=30,
+        )
+        await engine.settle(spend_first, 0, 10)
+        await engine.settle(spend_first, 0, 10)
+        with pytest.raises(PolicyRejectedError, match="Daily spend limit exceeded"):
+            await engine.admit(
+                gateway_key="spend-test",
+                request_id="req_spend_too_large",
+                limits=spend_limits,
+                estimated_tokens=0,
+                estimated_cost_microusd=30,
+            )
+        spend_second = await engine.admit(
+            gateway_key="spend-test",
+            request_id="req_spend_2",
+            limits=spend_limits,
+            estimated_tokens=0,
+            estimated_cost_microusd=20,
+        )
+        await engine.settle(spend_second, 0, 10)
+        daily_used = await redis.hget(f"northgate:policy:{{spend-test}}:spend:day:{day}", "used")
+        month = datetime.now(UTC).strftime("%Y%m")
+        monthly_used = await redis.hget(
+            f"northgate:policy:{{spend-test}}:spend:month:{month}", "used"
+        )
+        assert daily_used == monthly_used == b"20"
     finally:
         await redis.flushdb()
         await redis.aclose()

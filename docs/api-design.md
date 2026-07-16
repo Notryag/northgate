@@ -94,6 +94,8 @@ Northgate-RateLimit-Remaining
 Northgate-RateLimit-Reset
 Northgate-ConcurrencyLimit-Remaining
 Northgate-TokenLimit-Remaining
+Northgate-DailySpendLimit-Remaining-MicroUSD
+Northgate-MonthlySpendLimit-Remaining-MicroUSD
 ```
 
 Headers must not expose provider credential IDs or internal error details.
@@ -123,6 +125,11 @@ Implemented policy errors use `REQUEST_LIMIT_EXCEEDED`,
 `CONCURRENCY_LIMIT_EXCEEDED`, `TOKEN_LIMIT_EXCEEDED`, and
 `POLICY_UNAVAILABLE`. Redis admission checks all configured limits atomically;
 no reservation is written unless every check succeeds.
+
+Operator usage APIs are implemented at `/api/v1/usage/summary` and
+`/api/v1/usage/timeseries`. They require a dedicated operator key and support a
+maximum 90-day range with optional project and gateway filters. Application
+keys are not control-plane credentials.
 
 ## Proposed control-plane resources
 

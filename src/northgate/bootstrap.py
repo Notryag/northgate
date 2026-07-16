@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -9,6 +10,7 @@ from northgate.db.models import (
     ApplicationKey,
     Gateway,
     GatewayPolicy,
+    ModelPrice,
     Organization,
     Project,
     ProviderCredential,
@@ -131,6 +133,8 @@ async def bootstrap(settings: Settings) -> None:
                 settings.request_limit_per_minute,
                 settings.concurrency_limit,
                 settings.token_limit_per_day,
+                settings.daily_spend_limit_microusd,
+                settings.monthly_spend_limit_microusd,
             )
             if any(limit is not None for limit in configured_limits):
                 if policy is None:
@@ -139,6 +143,32 @@ async def bootstrap(settings: Settings) -> None:
                 policy.requests_per_minute = settings.request_limit_per_minute
                 policy.concurrent_requests = settings.concurrency_limit
                 policy.tokens_per_day = settings.token_limit_per_day
+                policy.daily_spend_microusd = settings.daily_spend_limit_microusd
+                policy.monthly_spend_microusd = settings.monthly_spend_limit_microusd
+
+            input_price = settings.input_price_microusd_per_million
+            output_price = settings.output_price_microusd_per_million
+            if input_price is not None and output_price is not None and settings.price_model:
+                effective_from = datetime(1970, 1, 1, tzinfo=UTC)
+                model_price = await session.scalar(
+                    select(ModelPrice).where(
+                        ModelPrice.provider == settings.price_provider,
+                        ModelPrice.model == settings.price_model,
+                        ModelPrice.effective_from == effective_from,
+                    )
+                )
+                if model_price is None:
+                    model_price = ModelPrice(
+                        provider=settings.price_provider,
+                        model=settings.price_model,
+                        effective_from=effective_from,
+                        input_microusd_per_million=input_price,
+                        output_microusd_per_million=output_price,
+                    )
+                    session.add(model_price)
+                else:
+                    model_price.input_microusd_per_million = input_price
+                    model_price.output_microusd_per_million = output_price
 
             await session.commit()
     finally:

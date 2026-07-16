@@ -27,6 +27,8 @@ class PolicyLimits:
     requests_per_minute: int | None = None
     concurrent_requests: int | None = None
     tokens_per_day: int | None = None
+    daily_spend_microusd: int | None = None
+    monthly_spend_microusd: int | None = None
 
     @property
     def enabled(self) -> bool:
@@ -36,6 +38,8 @@ class PolicyLimits:
                 self.requests_per_minute,
                 self.concurrent_requests,
                 self.tokens_per_day,
+                self.daily_spend_microusd,
+                self.monthly_spend_microusd,
             )
         )
 
@@ -112,6 +116,8 @@ class DatabaseRouteResolver:
                 requests_per_minute=policy.requests_per_minute if policy else None,
                 concurrent_requests=policy.concurrent_requests if policy else None,
                 tokens_per_day=policy.tokens_per_day if policy else None,
+                daily_spend_microusd=policy.daily_spend_microusd if policy else None,
+                monthly_spend_microusd=policy.monthly_spend_microusd if policy else None,
             ),
         )
 
@@ -134,5 +140,7 @@ def configured_route(settings: Settings) -> ResolvedRoute:
             requests_per_minute=settings.request_limit_per_minute,
             concurrent_requests=settings.concurrency_limit,
             tokens_per_day=settings.token_limit_per_day,
+            daily_spend_microusd=settings.daily_spend_limit_microusd,
+            monthly_spend_microusd=settings.monthly_spend_limit_microusd,
         ),
     )

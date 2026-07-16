@@ -4,15 +4,19 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
 
 from northgate import __version__
+from northgate.analytics import usage_summary, usage_timeseries
 from northgate.config import Settings, get_settings
+from northgate.console import console_index
 from northgate.credentials import CredentialCipher
 from northgate.db.database import Database
 from northgate.logging import configure_logging
 from northgate.middleware import RequestContextMiddleware
 from northgate.policy import PolicyEngine
+from northgate.pricing import PricingRepository
 from northgate.proxy import proxy_chat_completions
 from northgate.routing import DatabaseRouteResolver
 from northgate.usage import UsageRecorder
@@ -39,6 +43,8 @@ def create_app(
             settings.request_limit_per_minute,
             settings.concurrency_limit,
             settings.token_limit_per_day,
+            settings.daily_spend_limit_microusd,
+            settings.monthly_spend_limit_microusd,
         )
     )
     policy_possible = settings.routing_source == "database" or configured_policy
@@ -92,12 +98,16 @@ def create_app(
         openapi_url=None,
     )
     app.state.settings = settings
+    app.state.console_directory = settings.console_directory
     app.state.database = active_database
     app.state.route_resolver = route_resolver
     app.state.policy_engine = (
         PolicyEngine(active_redis, lease_seconds=settings.concurrency_lease_seconds)
         if active_redis is not None
         else None
+    )
+    app.state.pricing_repository = (
+        PricingRepository(active_database) if active_database is not None else None
     )
     app.state.usage_recorder = (
         UsageRecorder(active_database)
@@ -128,6 +138,14 @@ def create_app(
         proxy_chat_completions,
         methods=["POST"],
     )
+    app.add_api_route("/api/v1/usage/summary", usage_summary, methods=["GET"])
+    app.add_api_route("/api/v1/usage/timeseries", usage_timeseries, methods=["GET"])
+    app.mount(
+        "/console/assets",
+        StaticFiles(directory=settings.console_directory / "assets", check_dir=False),
+        name="console-assets",
+    )
+    app.add_api_route("/console", console_index, methods=["GET"], include_in_schema=False)
 
     return app
 

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr
@@ -27,6 +28,12 @@ class Settings(BaseSettings):
     request_limit_per_minute: int | None = Field(default=None, gt=0)
     concurrency_limit: int | None = Field(default=None, gt=0)
     token_limit_per_day: int | None = Field(default=None, gt=0)
+    daily_spend_limit_microusd: int | None = Field(default=None, gt=0)
+    monthly_spend_limit_microusd: int | None = Field(default=None, gt=0)
+    input_price_microusd_per_million: int | None = Field(default=None, ge=0)
+    output_price_microusd_per_million: int | None = Field(default=None, ge=0)
+    price_provider: str = "openai"
+    price_model: str | None = None
     policy_default_max_output_tokens: int = Field(default=4096, gt=0)
     concurrency_lease_seconds: int = Field(default=300, ge=30)
     application_key_sha256: SecretStr | None = None
@@ -37,6 +44,8 @@ class Settings(BaseSettings):
     provider_write_timeout_seconds: float = Field(default=30.0, gt=0)
     provider_pool_timeout_seconds: float = Field(default=10.0, gt=0)
     credential_encryption_key: SecretStr | None = None
+    operator_key_sha256: SecretStr | None = None
+    console_directory: Path = Path("apps/console/dist")
 
 
 @lru_cache

@@ -34,5 +34,6 @@ the pages needed for the current task.
 - `implemented`: behavior verified in the current codebase.
 - `deprecated`: supported temporarily but should not be used for new integrations.
 
-M0 foundation and M1 transparent proxy behavior are implemented. Limits,
-analytics, multi-provider routing, and the control plane are not implemented yet.
+M0 foundation, M1 transparent proxy behavior, and M2 limits and analytics are
+implemented. Multi-provider routing and the broader control plane are not
+implemented yet.
