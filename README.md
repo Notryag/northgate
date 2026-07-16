@@ -1,94 +1,155 @@
 # Northgate
 
-Northgate is a planned open-source AI gateway for observability, routing,
-rate limiting, and cost control. Applications send model traffic through
-Northgate instead of integrating provider governance separately.
+Northgate 是一个可自托管、供应商中立的开源 AI 网关，提供可观测性、流量治理、限流、成本控制和模型路由能力。应用通过 Northgate 发送模型请求，无需分别实现供应商凭证管理和治理逻辑。
 
-Northgate is currently in the foundation phase. The repository contains a
-runnable service shell and the initial product and architecture proposals; it
-does not contain proxy behavior yet.
+## 核心能力
 
-## Core responsibilities
+- 透明转发流式和非流式 AI 请求，保持 SSE 顺序且不缓冲完整响应。
+- 使用应用密钥认证调用方，不向业务应用暴露上游供应商凭证。
+- 记录请求、tokens、成本、延迟、供应商请求 ID 和错误结果。
+- 执行请求量、token、并发以及日/月消费限额。
+- 使用版本化模型价格核算成本，并按请求 ID 幂等结算。
+- 提供用量汇总、时序分析 API 和 React 运维控制台。
+- 为多供应商路由、重试、fallback 和健康感知提供独立数据面。
 
-- Proxy streaming and non-streaming AI requests.
-- Authenticate applications without exposing upstream provider credentials.
-- Record requests, tokens, cost, latency, cache status, and errors.
-- Enforce request, token, concurrency, and spend policies.
-- Route requests across providers and models with explicit fallback rules.
-- Export metrics, traces, and audit events.
+Northgate 不是账号池、订阅转 API 服务、模型运行时或 Agent 框架。
 
-Northgate is not an account pool, subscription conversion service, model
-runtime, or agent framework.
+## 项目状态
 
-## Documentation
+当前状态：M2 限流与分析已完成，下一阶段为 M3 路由与可靠性。
 
-Start at [docs/README.md](docs/README.md). It routes readers and coding agents
-to the smallest relevant set of documents.
+已经实现 OpenAI-compatible chat-completions 透明代理、PostgreSQL 持久化配置、加密供应商凭证、Redis 原子配额、消费预算、用量分析 API 和 React 运维控制台。详细进度见 [项目路线图](docs/roadmap.md)。
 
-## Project status
+## 架构概览
 
-Status: M2 limits and analytics complete; M3 routing and reliability next
+```text
+AI 应用
+   |
+   | 应用密钥 + 归因元数据
+   v
+Northgate 数据面
+   |-- 认证与策略准入
+   |-- 路由与供应商凭证
+   |-- 流式转发
+   |-- usage / 成本结算
+   |
+   v
+模型供应商
 
-The transparent proxy, Redis-backed limits, spend accounting, analytics APIs,
-and React operator console are implemented. See [docs/roadmap.md](docs/roadmap.md).
+PostgreSQL：配置、加密凭证、价格版本、请求账本
+Redis：请求窗口、并发 lease、token 与消费预留
+```
 
-## Development
+## 开发环境
 
-Install dependencies and run the checks:
+需要 Python 3.11、[uv](https://docs.astral.sh/uv/)、Node.js 22、Docker 和 Docker Compose。
+
+安装依赖并运行检查：
 
 ```sh
 uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q
+
+cd apps/console
+npm ci
+npm run check
+npm run build
 ```
 
-Run the service locally:
+启动独立的 PostgreSQL 和 Redis：
+
+```sh
+docker compose up -d postgres redis
+```
+
+PostgreSQL 暴露在 `5433` 端口，Redis 暴露在 `6380` 端口，避免与共享平台服务冲突。
+
+复制配置并执行迁移：
 
 ```sh
 cp .env.example .env
+uv run alembic upgrade head
+```
+
+启动服务：
+
+```sh
 uv run northgate
 ```
 
-The liveness endpoint is `http://127.0.0.1:8080/health/live`. The current
-readiness endpoint covers the process only; dependency checks will be added
-when the request path begins using PostgreSQL and Redis.
+健康检查地址：
 
-Configure the first OpenAI-compatible gateway by setting an application key
-digest and provider credential in `.env`:
+```text
+GET http://127.0.0.1:8080/health/live
+GET http://127.0.0.1:8080/health/ready
+```
+
+也可以构建并启动完整环境：
+
+```sh
+docker compose up --build
+```
+
+## 配置首个网关
+
+生成应用密钥摘要，并在 `.env` 中设置摘要和供应商凭证：
 
 ```sh
 printf '%s' 'ng_live_example' | sha256sum
-# Put the digest in NORTHGATE_APPLICATION_KEY_SHA256 and set
-# NORTHGATE_PROVIDER_API_KEY. Do not put either credential in source control.
+# 将摘要写入 NORTHGATE_APPLICATION_KEY_SHA256
+# 设置 NORTHGATE_PROVIDER_API_KEY
+# 不要将任何明文凭证提交到源码仓库
 ```
 
-Then send chat completions to:
-
-```text
-POST /v1/gateways/default/openai/chat/completions
-Authorization: Bearer ng_live_example
-```
-
-Configuration routing is useful for the first smoke test. To move the same
-gateway into durable storage:
+生成供应商凭证加密密钥：
 
 ```sh
-# Generate once and store the output in NORTHGATE_CREDENTIAL_ENCRYPTION_KEY.
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
+将输出保存到 `NORTHGATE_CREDENTIAL_ENCRYPTION_KEY`，然后初始化数据库配置：
+
+```sh
 uv run alembic upgrade head
 uv run northgate-bootstrap
 ```
 
-After bootstrap succeeds, set these values and restart Northgate:
+`northgate-bootstrap` 对默认 organization、project、gateway、应用密钥、供应商凭证和 route 幂等。它从环境读取秘密，只存储应用密钥摘要，并在写入 PostgreSQL 前加密供应商凭证。
+
+初始化成功后启用数据库路由和 usage 持久化：
 
 ```text
 NORTHGATE_ROUTING_SOURCE=database
 NORTHGATE_USAGE_PERSISTENCE_ENABLED=true
 ```
 
-Optional gateway limits are persisted by the same bootstrap command:
+## 调用代理
+
+OpenAI-compatible 客户端只需替换 base URL 和 API key：
+
+```text
+OPENAI_BASE_URL=http://127.0.0.1:8080/v1/gateways/default/openai
+OPENAI_API_KEY=ng_live_example
+```
+
+客户端继续追加 `/chat/completions`。工具定义、tool calls 和工具结果会原样通过，不会被 Northgate 重写。
+
+直接调用示例：
+
+```http
+POST /v1/gateways/default/openai/chat/completions
+Authorization: Bearer ng_live_example
+Content-Type: application/json
+Northgate-Metadata: {"tenant_id":"tenant-1","run_id":"run-1"}
+```
+
+`Northgate-Metadata` 只接受应用密钥允许的归因维度，不会作为授权依据，也不会透传给供应商。
+
+## 限流与消费预算
+
+bootstrap 可以持久化以下网关策略：
 
 ```text
 NORTHGATE_REQUEST_LIMIT_PER_MINUTE=60
@@ -98,18 +159,22 @@ NORTHGATE_DAILY_SPEND_LIMIT_MICROUSD=5000000
 NORTHGATE_MONTHLY_SPEND_LIMIT_MICROUSD=100000000
 ```
 
-Token capacity is reserved before forwarding. The estimate is request UTF-8
-bytes divided by three plus `max_completion_tokens`/`max_tokens`, or 4096 when
-the request omits an output cap. Northgate settles the reservation to provider-
-reported usage exactly once by request ID. When usage is missing after an
-ambiguous provider failure, the conservative reservation remains charged.
+Northgate 在转发前预留 token 和消费容量。token 预估值为请求 UTF-8 字节数除以三，再加上 `max_completion_tokens` / `max_tokens`；请求未提供输出上限时使用 4096。响应完成后，预留会根据供应商报告的实际 usage 按请求 ID 精确结算一次。供应商结果不明确且缺少 usage 时，保留保守预留。
 
-Spend limits require a versioned price. Bootstrap can establish the initial
-price version using `NORTHGATE_PRICE_PROVIDER`, `NORTHGATE_PRICE_MODEL`, and the
-input/output `*_PRICE_MICROUSD_PER_MILLION` values. One US dollar is 1,000,000
-micro-USD.
+消费限额需要版本化模型价格。初始价格可以通过以下配置写入：
 
-Usage analytics require a separate operator key digest:
+```text
+NORTHGATE_PRICE_PROVIDER=openai
+NORTHGATE_PRICE_MODEL=gpt-4o-mini
+NORTHGATE_INPUT_PRICE_MICROUSD_PER_MILLION=150000
+NORTHGATE_OUTPUT_PRICE_MICROUSD_PER_MILLION=600000
+```
+
+价格单位为每百万 token 的 micro-USD，`1 USD = 1,000,000 micro-USD`。
+
+## 分析与运维控制台
+
+分析接口使用独立 operator key，应用密钥不能读取跨项目 usage 和成本数据：
 
 ```text
 GET /api/v1/usage/summary
@@ -117,10 +182,13 @@ GET /api/v1/usage/timeseries?interval=hour
 Authorization: Bearer <operator key>
 ```
 
-Application keys cannot call operator analytics endpoints.
+React 运维控制台地址：
 
-The React operator console is available at `/console`. For frontend
-development with API requests proxied to the local service:
+```text
+http://127.0.0.1:8080/console
+```
+
+前端开发模式会将 `/api` 请求代理到本地 Northgate：
 
 ```sh
 cd apps/console
@@ -128,31 +196,13 @@ npm ci
 npm run dev
 ```
 
-`northgate-bootstrap` is idempotent for the default organization, project,
-gateway, key, credential, and route. It reads secrets from the environment,
-stores only the application-key digest, and encrypts the provider credential
-before writing it to PostgreSQL.
+## 文档
 
-For an OpenAI-compatible client, use this base URL and the Northgate
-application key in place of the provider key:
+从 [文档索引](docs/README.md) 开始，根据任务只读取相关设计页：
 
-```text
-OPENAI_BASE_URL=http://127.0.0.1:8080/v1/gateways/default/openai
-OPENAI_API_KEY=ng_live_example
-```
-
-The client continues to append `/chat/completions`; tool definitions, tool
-calls, and tool results pass through unchanged.
-
-Run the isolated development stack:
-
-```sh
-docker compose up --build
-```
-
-PostgreSQL is exposed on port 5433 and Redis on port 6380 to avoid colliding
-with the shared platform services. Apply migrations with:
-
-```sh
-uv run alembic upgrade head
-```
+- [产品范围](docs/product-scope.md)
+- [系统架构](docs/architecture.md)
+- [API 设计](docs/api-design.md)
+- [集成边界](docs/integration-boundaries.md)
+- [项目路线图](docs/roadmap.md)
+- [架构决策](docs/decisions/README.md)
