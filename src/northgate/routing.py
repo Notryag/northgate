@@ -23,6 +23,14 @@ class RouteUnavailableError(Exception):
     pass
 
 
+def _adapter_config(value: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise RouteUnavailableError
+    return tuple(sorted(value.items()))
+
+
 @dataclass(frozen=True)
 class PolicyLimits:
     requests_per_minute: int | None = None
@@ -55,6 +63,8 @@ class ResolvedRoute:
     api_key: str
     allowed_metadata_keys: frozenset[str]
     policy: PolicyLimits
+    adapter: str = "openai_compatible"
+    adapter_config: tuple[tuple[str, str], ...] = ()
     priority: int = 0
     weight: int = 1
     match_metadata: tuple[tuple[str, str], ...] = ()
@@ -122,6 +132,8 @@ class DatabaseRouteResolver:
                     provider=credential.provider,
                     base_url=credential.base_url,
                     api_key=api_key,
+                    adapter=credential.adapter,
+                    adapter_config=_adapter_config(credential.adapter_config),
                     allowed_metadata_keys=frozenset(application.allowed_metadata_keys),
                     policy=PolicyLimits(
                         requests_per_minute=policy.requests_per_minute if policy else None,
@@ -155,6 +167,12 @@ def configured_route(settings: Settings) -> ResolvedRoute:
         provider="openai",
         base_url=settings.provider_base_url,
         api_key=provider_key.get_secret_value(),
+        adapter=settings.provider_adapter,
+        adapter_config=(
+            (("api_version", settings.provider_api_version),)
+            if settings.provider_api_version
+            else ()
+        ),
         allowed_metadata_keys=frozenset(
             key.strip() for key in settings.allowed_metadata_keys.split(",") if key.strip()
         ),
@@ -204,6 +222,12 @@ def configured_routes(settings: Settings) -> list[ResolvedRoute]:
             provider=settings.fallback_provider_name,
             base_url=settings.fallback_provider_base_url,
             api_key=fallback_key.get_secret_value(),
+            adapter=settings.fallback_provider_adapter,
+            adapter_config=(
+                (("api_version", settings.fallback_provider_api_version),)
+                if settings.fallback_provider_api_version
+                else ()
+            ),
             allowed_metadata_keys=primary.allowed_metadata_keys,
             policy=primary.policy,
             priority=1,

@@ -28,6 +28,11 @@ from northgate.policy import (
     PolicyUnavailableError,
 )
 from northgate.pricing import PriceQuote, PricingRepository, configured_price
+from northgate.provider_adapters import (
+    AdapterRequestError,
+    AdapterUnavailableError,
+    provider_adapter,
+)
 from northgate.route_health import RouteHealthEngine, RouteHealthUnavailableError
 from northgate.routing import (
     DatabaseRouteResolver,
@@ -100,14 +105,12 @@ def _configured_application_key_is_valid(credential: str, settings: Settings) ->
     return compare_digest(actual, expected.get_secret_value())
 
 
-def _upstream_headers(request: Request, provider_api_key: str) -> dict[str, str]:
-    headers = {
+def _forwarded_request_headers(request: Request) -> dict[str, str]:
+    return {
         name: value
         for name, value in request.headers.items()
         if name.lower() in _FORWARDED_REQUEST_HEADERS
     }
-    headers["authorization"] = f"Bearer {provider_api_key}"
-    return headers
 
 
 def _downstream_headers(
@@ -261,9 +264,10 @@ async def _consume_retryable_response(
 
 
 def _route_health_key(route: ResolvedRoute) -> str:
-    if route.route_id is not None:
-        return str(route.route_id)
-    identity = f"{route.provider}\0{route.base_url.rstrip('/')}"
+    identity = (
+        f"{route.route_id or ''}\0{route.provider}\0{route.base_url.rstrip('/')}\0"
+        f"{route.adapter}\0{route.adapter_config}"
+    )
     return sha256(identity.encode()).hexdigest()
 
 
@@ -575,6 +579,31 @@ async def proxy_chat_completions(
 
     body = await request.body()
     model = _request_model(body)
+    try:
+        for candidate in routes:
+            provider_adapter(candidate.adapter).validate(candidate, model)
+    except AdapterRequestError as exc:
+        return _error(
+            request,
+            status_code=400,
+            code="INVALID_PROVIDER_REQUEST",
+            message=str(exc),
+            retryable=False,
+        )
+    except AdapterUnavailableError:
+        await logger.aexception(
+            "provider_adapter_unavailable",
+            northgate_request_id=request_id,
+        )
+        return _error(
+            request,
+            status_code=503,
+            code="PROVIDER_ADAPTER_UNAVAILABLE",
+            message="Provider adapter is unavailable",
+            retryable=False,
+        )
+
+    forwarded_request_headers = _forwarded_request_headers(request)
     policy_engine: PolicyEngine | None = request.app.state.policy_engine
     recorder: UsageRecorder | None = request.app.state.usage_recorder
     exact_cache: ExactCache | None = request.app.state.exact_cache
@@ -585,11 +614,7 @@ async def proxy_chat_completions(
             gateway_key=str(route.gateway_id or gateway_slug),
             body=body,
             metadata=request_metadata,
-            request_headers={
-                name.lower(): value
-                for name, value in request.headers.items()
-                if name.lower() in _FORWARDED_REQUEST_HEADERS
-            },
+            request_headers=forwarded_request_headers,
             routes=routes,
         )
         try:
@@ -924,11 +949,12 @@ async def proxy_chat_completions(
                     retryable=True,
                 )
 
-        upstream_request = client.build_request(
-            "POST",
-            f"{candidate.base_url.rstrip('/')}/chat/completions",
-            headers=_upstream_headers(request, candidate.api_key),
-            content=body,
+        upstream_request = provider_adapter(candidate.adapter).build_request(
+            client,
+            candidate,
+            forwarded_headers=forwarded_request_headers,
+            body=body,
+            model=model,
         )
         try:
             response = await client.send(upstream_request, stream=True)

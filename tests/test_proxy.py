@@ -71,6 +71,68 @@ async def test_non_streaming_response_is_forwarded_without_client_credential() -
 
 
 @pytest.mark.anyio
+async def test_azure_adapter_builds_deployment_url_and_api_key_auth() -> None:
+    request_body = b'{"model":"deployment/test","stream":false}'
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        assert request.url.raw_path.split(b"?", 1)[0] == (
+            b"/openai/deployments/deployment%2Ftest/chat/completions"
+        )
+        assert request.url.params["api-version"] == "test-version"
+        assert request.headers["api-key"] == PROVIDER_KEY
+        assert "authorization" not in request.headers
+        assert await request.aread() == request_body
+        return httpx.Response(200, json={"id": "azure-response"})
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(
+            provider_base_url="https://resource.openai.azure.com",
+            provider_adapter="azure_openai",
+            provider_api_version="test-version",
+        ),
+        upstream_client=upstream_client,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH,
+            content=request_body,
+            headers={**_authorization(), "Content-Type": "application/json"},
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "azure-response"}
+
+
+@pytest.mark.anyio
+async def test_azure_adapter_requires_model_before_provider_attempt() -> None:
+    called = False
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200)
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(
+            provider_base_url="https://resource.openai.azure.com",
+            provider_adapter="azure_openai",
+            provider_api_version="test-version",
+        ),
+        upstream_client=upstream_client,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(PROXY_PATH, json={}, headers=_authorization())
+    await upstream_client.aclose()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_PROVIDER_REQUEST"
+    assert called is False
+
+
+@pytest.mark.anyio
 async def test_invalid_application_key_fails_before_upstream() -> None:
     called = False
 

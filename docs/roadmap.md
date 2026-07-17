@@ -88,7 +88,7 @@ Exit criteria:
 
 ## M3: Routing and reliability
 
-Status: in progress
+Status: complete (2026-07-17)
 
 Implemented so far:
 
@@ -99,6 +99,14 @@ Implemented so far:
 - Redis-backed route circuit breakers with single-request half-open probes and explicit recovery windows.
 - Deterministic weighted routing and exact-match metadata rules with ordered fallback.
 - Redis-backed exact request caching with bounded entries and cache-hit accounting.
+- Explicit OpenAI-compatible and Azure OpenAI provider adapters with isolated authentication.
+
+Verification:
+
+- Failure injection confirms ordered fallback, open-circuit route skipping, and recovery behavior.
+- Provider attempts remain individually visible with usage, cost, latency, and ambiguous outcomes.
+- Exact-cache tests confirm hits avoid provider calls while oversized and variant requests bypass.
+- Azure adapter tests confirm deployment URL encoding, API version forwarding, and credential isolation.
 
 Deliverables:
 

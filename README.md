@@ -152,6 +152,17 @@ NORTHGATE_ROUTE_HEALTH_RECOVERY_SECONDS=30
 NORTHGATE_ROUTE_HEALTH_FAILURE_STATUS_CODES=500,502,503,504
 ```
 
+Provider adapter 决定上游 URL 和认证方式。默认 `openai_compatible` 使用 `{base_url}/chat/completions` 与 Bearer API key。Azure OpenAI 使用 resource 根地址、deployment 路径和 `api-key`：
+
+```text
+NORTHGATE_PROVIDER_ADAPTER=azure_openai
+NORTHGATE_PROVIDER_BASE_URL=https://<resource>.openai.azure.com
+NORTHGATE_PROVIDER_API_KEY=<azure key>
+NORTHGATE_PROVIDER_API_VERSION=<api-version>
+```
+
+Azure adapter 将 OpenAI 请求体的 `model` 解释为 deployment 名称，并请求 `/openai/deployments/{deployment}/chat/completions`。数据库模式在 `provider_credentials.adapter` 和 `adapter_config` 中保存相同的非秘密配置；API key 仍加密存储。两种 adapter 都返回 OpenAI-compatible 响应，因此 streaming、tool calls、usage、重试、熔断和缓存共享同一主流程。
+
 只有在响应头尚未发送给客户端时才允许 retry 或 fallback。流开始后不会跨供应商拼接响应。数据库路由按 `priority` 依次尝试所有启用 route，并将每次供应商调用独立写入 attempt 账本。
 
 启用健康感知后，连接错误、超时和配置的状态码会累计 route 失败次数。达到阈值后该 route 在恢复窗口内被跳过；窗口结束时仅放行一个半开探测请求，成功后恢复流量，失败则重新进入恢复窗口。健康状态存储在 Redis，Redis 不可用时网关拒绝继续执行受健康策略保护的 route。

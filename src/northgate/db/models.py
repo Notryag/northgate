@@ -73,6 +73,8 @@ class ProviderCredential(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200))
     provider: Mapped[str] = mapped_column(String(40), default="openai")
     base_url: Mapped[str] = mapped_column(String(2048))
+    adapter: Mapped[str] = mapped_column(String(40), default="openai_compatible")
+    adapter_config: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     encrypted_api_key: Mapped[bytes] = mapped_column(LargeBinary)
 
 

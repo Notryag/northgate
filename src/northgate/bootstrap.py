@@ -101,12 +101,24 @@ async def bootstrap(settings: Settings) -> None:
                     name="default-openai",
                     provider="openai",
                     base_url=settings.provider_base_url,
+                    adapter=settings.provider_adapter,
+                    adapter_config=(
+                        {"api_version": settings.provider_api_version}
+                        if settings.provider_api_version
+                        else {}
+                    ),
                     encrypted_api_key=encrypted_api_key,
                 )
                 session.add(provider_credential)
                 await session.flush()
             else:
                 provider_credential.base_url = settings.provider_base_url
+                provider_credential.adapter = settings.provider_adapter
+                provider_credential.adapter_config = (
+                    {"api_version": settings.provider_api_version}
+                    if settings.provider_api_version
+                    else {}
+                )
                 provider_credential.encrypted_api_key = encrypted_api_key
 
             route = await session.scalar(
@@ -185,6 +197,12 @@ async def bootstrap(settings: Settings) -> None:
                         name=fallback_name,
                         provider=settings.fallback_provider_name,
                         base_url=settings.fallback_provider_base_url,
+                        adapter=settings.fallback_provider_adapter,
+                        adapter_config=(
+                            {"api_version": settings.fallback_provider_api_version}
+                            if settings.fallback_provider_api_version
+                            else {}
+                        ),
                         encrypted_api_key=encrypted_fallback_key,
                     )
                     session.add(fallback_credential)
@@ -192,6 +210,12 @@ async def bootstrap(settings: Settings) -> None:
                 else:
                     fallback_credential.provider = settings.fallback_provider_name
                     fallback_credential.base_url = settings.fallback_provider_base_url
+                    fallback_credential.adapter = settings.fallback_provider_adapter
+                    fallback_credential.adapter_config = (
+                        {"api_version": settings.fallback_provider_api_version}
+                        if settings.fallback_provider_api_version
+                        else {}
+                    )
                     fallback_credential.encrypted_api_key = encrypted_fallback_key
 
                 fallback_route = await session.scalar(

@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     application_key_sha256: SecretStr | None = None
     provider_base_url: str = "https://api.openai.com/v1"
     provider_api_key: SecretStr | None = None
+    provider_adapter: Literal["openai_compatible", "azure_openai"] = "openai_compatible"
+    provider_api_version: str | None = None
     provider_connect_timeout_seconds: float = Field(default=10.0, gt=0)
     provider_read_timeout_seconds: float = Field(default=300.0, gt=0)
     provider_write_timeout_seconds: float = Field(default=30.0, gt=0)
@@ -51,6 +53,8 @@ class Settings(BaseSettings):
     fallback_provider_name: str | None = None
     fallback_provider_base_url: str | None = None
     fallback_provider_api_key: SecretStr | None = None
+    fallback_provider_adapter: Literal["openai_compatible", "azure_openai"] = "openai_compatible"
+    fallback_provider_api_version: str | None = None
     fallback_provider_max_retries: int = Field(default=0, ge=0, le=5)
     route_health_enabled: bool = False
     route_health_failure_threshold: int = Field(default=3, ge=1, le=100)

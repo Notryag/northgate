@@ -88,6 +88,8 @@ def exact_cache_key(
             str(route.route_id or ""),
             route.provider,
             route.base_url.rstrip("/"),
+            route.adapter,
+            route.adapter_config,
             route.priority,
             route.weight,
             route.match_metadata,
