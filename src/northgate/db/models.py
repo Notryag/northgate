@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -77,7 +78,7 @@ class ProviderCredential(TimestampMixin, Base):
 
 class Route(TimestampMixin, Base):
     __tablename__ = "routes"
-    __table_args__ = (UniqueConstraint("gateway_id", "priority"),)
+    __table_args__ = (CheckConstraint("weight > 0", name="ck_routes_weight_positive"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     gateway_id: Mapped[UUID] = mapped_column(
@@ -88,6 +89,8 @@ class Route(TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(200))
     priority: Mapped[int] = mapped_column(Integer, default=0)
+    weight: Mapped[int] = mapped_column(Integer, default=1)
+    match_metadata: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(default=True)
     max_retries: Mapped[int] = mapped_column(Integer, default=0)
     retry_status_codes: Mapped[list[int]] = mapped_column(

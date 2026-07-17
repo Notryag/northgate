@@ -110,7 +110,10 @@ async def bootstrap(settings: Settings) -> None:
                 provider_credential.encrypted_api_key = encrypted_api_key
 
             route = await session.scalar(
-                select(Route).where(Route.gateway_id == gateway.id, Route.priority == 0)
+                select(Route).where(
+                    Route.gateway_id == gateway.id,
+                    Route.name == "default-openai",
+                )
             )
             if route is None:
                 session.add(
@@ -119,6 +122,8 @@ async def bootstrap(settings: Settings) -> None:
                         provider_credential_id=provider_credential.id,
                         name="default-openai",
                         priority=0,
+                        weight=1,
+                        match_metadata={},
                         enabled=True,
                         max_retries=settings.provider_max_retries,
                         retry_status_codes=[
@@ -141,6 +146,7 @@ async def bootstrap(settings: Settings) -> None:
                 )
             else:
                 route.provider_credential_id = provider_credential.id
+                route.priority = 0
                 route.enabled = True
                 route.max_retries = settings.provider_max_retries
                 route.retry_status_codes = [
@@ -189,7 +195,10 @@ async def bootstrap(settings: Settings) -> None:
                     fallback_credential.encrypted_api_key = encrypted_fallback_key
 
                 fallback_route = await session.scalar(
-                    select(Route).where(Route.gateway_id == gateway.id, Route.priority == 1)
+                    select(Route).where(
+                        Route.gateway_id == gateway.id,
+                        Route.name.startswith("fallback-"),
+                    )
                 )
                 retry_status_codes = [
                     int(code.strip())
@@ -203,6 +212,8 @@ async def bootstrap(settings: Settings) -> None:
                             provider_credential_id=fallback_credential.id,
                             name=fallback_name,
                             priority=1,
+                            weight=1,
+                            match_metadata={},
                             enabled=True,
                             max_retries=settings.fallback_provider_max_retries,
                             retry_status_codes=retry_status_codes,
@@ -222,6 +233,7 @@ async def bootstrap(settings: Settings) -> None:
                 else:
                     fallback_route.provider_credential_id = fallback_credential.id
                     fallback_route.name = fallback_name
+                    fallback_route.priority = 1
                     fallback_route.enabled = True
                     fallback_route.max_retries = settings.fallback_provider_max_retries
                     fallback_route.retry_status_codes = retry_status_codes

@@ -45,9 +45,10 @@ default.
 
 Implemented behavior: configuration routing compares a configured SHA-256 key
 digest. Database routing resolves the digest to a project, verifies gateway
-ownership, selects the first enabled route, and decrypts its provider
-credential in memory. Client authorization headers are never forwarded
-upstream.
+ownership, filters enabled routes by accepted metadata, and orders them by
+priority, metadata specificity, and deterministic weight selection. Provider
+credentials are decrypted in memory. Client authorization headers are never
+forwarded upstream.
 
 ## Request metadata
 
@@ -67,6 +68,7 @@ Limits:
 - Keys and string values have explicit length limits.
 - Reserved keys use the `northgate.` prefix.
 - Metadata is never forwarded upstream unless a route explicitly maps it.
+- Route metadata rules use exact string matches and never grant gateway access.
 
 ## Streaming
 

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from hashlib import sha256
+from itertools import groupby
 from uuid import UUID
 
 from sqlalchemy import select
@@ -54,6 +55,9 @@ class ResolvedRoute:
     api_key: str
     allowed_metadata_keys: frozenset[str]
     policy: PolicyLimits
+    priority: int = 0
+    weight: int = 1
+    match_metadata: tuple[tuple[str, str], ...] = ()
     max_retries: int = 0
     retry_status_codes: frozenset[int] = frozenset({429, 500, 502, 503, 504})
     health_failure_threshold: int = 0
@@ -94,7 +98,7 @@ class DatabaseRouteResolver:
                     ProviderCredential.id == Route.provider_credential_id,
                 )
                 .where(Route.gateway_id == gateway.id, Route.enabled.is_(True))
-                .order_by(Route.priority)
+                .order_by(Route.priority, Route.id)
             )
             rows = result.all()
             if not rows:
@@ -125,6 +129,9 @@ class DatabaseRouteResolver:
                         daily_spend_microusd=policy.daily_spend_microusd if policy else None,
                         monthly_spend_microusd=policy.monthly_spend_microusd if policy else None,
                     ),
+                    priority=route.priority,
+                    weight=route.weight,
+                    match_metadata=tuple(sorted(route.match_metadata.items())),
                     max_retries=route.max_retries,
                     retry_status_codes=frozenset(route.retry_status_codes),
                     health_failure_threshold=route.health_failure_threshold,
@@ -156,6 +163,7 @@ def configured_route(settings: Settings) -> ResolvedRoute:
             daily_spend_microusd=settings.daily_spend_limit_microusd,
             monthly_spend_microusd=settings.monthly_spend_limit_microusd,
         ),
+        priority=0,
         max_retries=settings.provider_max_retries,
         retry_status_codes=frozenset(
             int(code.strip())
@@ -195,6 +203,7 @@ def configured_routes(settings: Settings) -> list[ResolvedRoute]:
             api_key=fallback_key.get_secret_value(),
             allowed_metadata_keys=primary.allowed_metadata_keys,
             policy=primary.policy,
+            priority=1,
             max_retries=settings.fallback_provider_max_retries,
             retry_status_codes=primary.retry_status_codes,
             health_failure_threshold=primary.health_failure_threshold,
@@ -202,3 +211,36 @@ def configured_routes(settings: Settings) -> list[ResolvedRoute]:
             health_failure_status_codes=primary.health_failure_status_codes,
         ),
     ]
+
+
+def select_routes(
+    routes: list[ResolvedRoute],
+    metadata: dict[str, str],
+    selection_key: str,
+) -> list[ResolvedRoute]:
+    matching = [
+        route
+        for route in routes
+        if all(metadata.get(key) == value for key, value in route.match_metadata)
+    ]
+    matching.sort(key=lambda route: (route.priority, -len(route.match_metadata)))
+
+    ordered: list[ResolvedRoute] = []
+    for tier, grouped in groupby(
+        matching,
+        key=lambda route: (route.priority, len(route.match_metadata)),
+    ):
+        remaining = list(grouped)
+        round_index = 0
+        while remaining:
+            total_weight = sum(route.weight for route in remaining)
+            digest = sha256(f"{selection_key}\0{tier}\0{round_index}".encode()).digest()
+            ticket = int.from_bytes(digest[:8], "big") % total_weight
+            cumulative = 0
+            for index, route in enumerate(remaining):
+                cumulative += route.weight
+                if ticket < cumulative:
+                    ordered.append(remaining.pop(index))
+                    break
+            round_index += 1
+    return ordered

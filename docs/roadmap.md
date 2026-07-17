@@ -97,6 +97,7 @@ Implemented so far:
 - Durable provider-attempt records for status, latency, usage, cost, and ambiguous outcomes.
 - Operator API for inspecting every attempt behind a Northgate request ID.
 - Redis-backed route circuit breakers with single-request half-open probes and explicit recovery windows.
+- Deterministic weighted routing and exact-match metadata rules with ordered fallback.
 
 Deliverables:
 

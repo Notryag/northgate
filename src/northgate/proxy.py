@@ -30,6 +30,7 @@ from northgate.routing import (
     ResolvedRoute,
     RouteUnavailableError,
     configured_routes,
+    select_routes,
 )
 from northgate.usage import (
     DuplicateRequestError,
@@ -493,6 +494,16 @@ async def proxy_chat_completions(
             message="Invalid request metadata",
             retryable=False,
         )
+    routes = select_routes(routes, request_metadata, request_id)
+    if not routes:
+        return _error(
+            request,
+            status_code=503,
+            code="ROUTE_NOT_MATCHED",
+            message="No route matches the request metadata",
+            retryable=False,
+        )
+    route = routes[0]
 
     body = await request.body()
     model = _request_model(body)

@@ -156,6 +156,8 @@ NORTHGATE_ROUTE_HEALTH_FAILURE_STATUS_CODES=500,502,503,504
 
 启用健康感知后，连接错误、超时和配置的状态码会累计 route 失败次数。达到阈值后该 route 在恢复窗口内被跳过；窗口结束时仅放行一个半开探测请求，成功后恢复流量，失败则重新进入恢复窗口。健康状态存储在 Redis，Redis 不可用时网关拒绝继续执行受健康策略保护的 route。
 
+数据库 route 还支持 `weight` 和 `match_metadata`。`priority` 越小越先尝试；同一优先级中，更具体的 metadata 规则优先，再按正整数权重选择首个 route。选择使用 Northgate request ID 作为稳定输入，通用规则和未被选中的同级 route 仍保留在 fallback 队列中。例如 `match_metadata={"environment":"production"}` 只匹配带有相同已授权 metadata 的请求。
+
 直接调用示例：
 
 ```http
