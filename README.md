@@ -241,6 +241,7 @@ NORTHGATE_OUTPUT_PRICE_MICROUSD_PER_MILLION=600000
 ```text
 GET /api/v1/usage/summary
 GET /api/v1/usage/timeseries?interval=hour
+GET /api/v1/usage/routes
 GET /api/v1/usage/requests/{request_id}/attempts
 Authorization: Bearer <operator key>
 ```
@@ -250,6 +251,9 @@ React 运维控制台地址：
 ```text
 http://127.0.0.1:8080/console
 ```
+
+控制台的 Provider traffic 表按实际上游 attempt 统计 route 占比、成功、失败、
+tokens、成本和延迟。retry 与 fallback 会分别计入对应 route，不会被最终成功请求掩盖。
 
 前端开发模式会将 `/api` 请求代理到本地 Northgate：
 

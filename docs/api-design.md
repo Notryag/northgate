@@ -128,9 +128,11 @@ Implemented policy errors use `REQUEST_LIMIT_EXCEEDED`,
 no reservation is written unless every check succeeds.
 
 Operator usage APIs are implemented at `/api/v1/usage/summary` and
-`/api/v1/usage/timeseries`. They require a dedicated operator key and support a
-maximum 90-day range with optional project and gateway filters. Application
-keys are not control-plane credentials.
+`/api/v1/usage/timeseries`. `/api/v1/usage/routes` groups actual upstream
+attempts by route and provider so retries and fallbacks remain visible when
+checking weighted traffic distribution. They require a dedicated operator key
+and support a maximum 90-day range with optional project and gateway filters.
+Application keys are not control-plane credentials.
 
 `/api/v1/usage/requests/{request_id}/attempts` exposes the ordered provider
 attempt ledger to operators. Retry and fallback happen only before downstream

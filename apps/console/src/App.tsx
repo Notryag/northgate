@@ -8,7 +8,13 @@ import {
   RefreshCw,
   ShieldAlert,
 } from "lucide-react";
-import { ApiError, loadUsage, type UsageSeries, type UsageSummary } from "./api";
+import {
+  ApiError,
+  loadUsage,
+  type RouteUsageReport,
+  type UsageSeries,
+  type UsageSummary,
+} from "./api";
 
 const UsageChart = lazy(() => import("./UsageChart"));
 
@@ -68,6 +74,7 @@ export function App() {
   const [interval, setInterval] = useState<"hour" | "day">("hour");
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [series, setSeries] = useState<UsageSeries | null>(null);
+  const [routes, setRoutes] = useState<RouteUsageReport | null>(null);
   const [status, setStatus] = useState<"connecting" | "online" | "error">("connecting");
   const [updated, setUpdated] = useState("Not loaded");
 
@@ -75,9 +82,14 @@ export function App() {
     if (!operatorKey) { setAccessOpen(true); return; }
     setStatus("connecting");
     try {
-      const [nextSummary, nextSeries] = await loadUsage(operatorKey, hours, interval);
+      const [nextSummary, nextSeries, nextRoutes] = await loadUsage(
+        operatorKey,
+        hours,
+        interval,
+      );
       setSummary(nextSummary);
       setSeries(nextSeries);
+      setRoutes(nextRoutes);
       setUpdated(`Updated ${new Date().toLocaleTimeString()}`);
       setStatus("online");
       setAccessError("");
@@ -121,6 +133,58 @@ export function App() {
         <section className="chart-section">
           <div className="section-heading"><div><h2>Traffic and token volume</h2><p>{series ? `${new Date(series.start).toLocaleString()} - ${new Date(series.end).toLocaleString()}` : "-"}</p></div><div className="legend"><span className="requests-key">Requests</span><span className="tokens-key">Tokens</span></div></div>
           <Suspense fallback={<div className="chart-wrap"><div className="empty-chart">Loading chart</div></div>}><UsageChart points={series?.points ?? []} /></Suspense>
+        </section>
+        <section className="table-section">
+          <div className="section-heading">
+            <div>
+              <h2>Provider traffic</h2>
+              <p>{routes ? `${number.format(routes.total_attempts)} upstream attempts` : "-"}</p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Route</th>
+                  <th>Provider</th>
+                  <th>Attempts</th>
+                  <th>Share</th>
+                  <th>Succeeded</th>
+                  <th>Failed</th>
+                  <th>In flight</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                  <th>Avg latency</th>
+                </tr>
+              </thead>
+              <tbody>
+                {routes?.routes.length ? (
+                  routes.routes.map((route) => (
+                    <tr key={`${route.route_id ?? "configured"}-${route.provider}`}>
+                      <td className="route-name">{route.route_name ?? "Configured route"}</td>
+                      <td>{route.provider}</td>
+                      <td>{number.format(route.attempts)}</td>
+                      <td>{route.attempt_share_percent.toFixed(2)}%</td>
+                      <td>{number.format(route.successful_attempts)}</td>
+                      <td>{number.format(route.failed_attempts)}</td>
+                      <td>{number.format(route.in_flight_attempts)}</td>
+                      <td>{number.format(route.total_tokens)}</td>
+                      <td>{cost(route.cost_microusd)}</td>
+                      <td>
+                        {route.average_latency_ms == null
+                          ? "-"
+                          : `${number.format(route.average_latency_ms)} ms`}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={10} className="empty">No provider attempts in this range</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
         <section className="table-section">
           <div className="section-heading"><h2>Usage buckets</h2></div>

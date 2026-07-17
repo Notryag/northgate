@@ -98,6 +98,7 @@ select { padding: 0 30px 0 10px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { padding: 11px 14px; text-align: right; border-bottom: 1px solid #e5e9e7; white-space: nowrap; }
 th:first-child, td:first-child { text-align: left; }
+.route-name { font-weight: 650; color: #303833; }
 th { color: #68726d; background: #f8f9f8; font-size: 11px; text-transform: uppercase; font-weight: 700; }
 tbody tr:last-child td { border-bottom: 0; }
 .empty { color: #7b8580; text-align: center !important; height: 80px; }

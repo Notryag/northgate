@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import case, func, select
 
 from northgate.db.database import Database
-from northgate.db.models import ProviderAttemptRecord, RequestRecord
+from northgate.db.models import ProviderAttemptRecord, RequestRecord, Route
 from northgate.operator_auth import authorize_operator
 
 _MAX_RANGE = timedelta(days=90)
@@ -146,6 +146,101 @@ async def usage_timeseries(
                 {
                     "timestamp": row.bucket.isoformat(),
                     "requests": int(row.requests),
+                    "total_tokens": int(row.total_tokens),
+                    "cost_microusd": int(row.cost_microusd),
+                    "average_latency_ms": round(float(row.average_latency_ms), 2)
+                    if row.average_latency_ms is not None
+                    else None,
+                }
+                for row in rows
+            ],
+        }
+    )
+
+
+async def usage_routes(
+    request: Request,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    project_id: UUID | None = None,
+    gateway_id: UUID | None = None,
+) -> Response:
+    authorization_error = authorize_operator(request)
+    if authorization_error is not None:
+        return authorization_error
+    selected_range = _range(start, end)
+    if selected_range is None:
+        return JSONResponse(
+            {"error": {"code": "INVALID_TIME_RANGE", "message": "Invalid time range"}},
+            status_code=400,
+        )
+    database = _database(request)
+    if database is None:
+        return JSONResponse(
+            {"error": {"code": "ANALYTICS_UNAVAILABLE", "message": "Analytics unavailable"}},
+            status_code=503,
+        )
+
+    resolved_start, resolved_end = selected_range
+    filters = [
+        ProviderAttemptRecord.started_at >= resolved_start,
+        ProviderAttemptRecord.started_at < resolved_end,
+    ]
+    if project_id is not None:
+        filters.append(RequestRecord.project_id == project_id)
+    if gateway_id is not None:
+        filters.append(RequestRecord.gateway_id == gateway_id)
+    statement = (
+        select(
+            ProviderAttemptRecord.route_id,
+            Route.name.label("route_name"),
+            ProviderAttemptRecord.provider,
+            func.count().label("attempts"),
+            func.sum(case((ProviderAttemptRecord.outcome == "succeeded", 1), else_=0)).label(
+                "successful"
+            ),
+            func.sum(case((ProviderAttemptRecord.outcome == "started", 1), else_=0)).label(
+                "in_flight"
+            ),
+            func.sum(
+                case(
+                    (
+                        ProviderAttemptRecord.outcome.not_in(["succeeded", "started"]),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("failed"),
+            func.coalesce(func.sum(ProviderAttemptRecord.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(ProviderAttemptRecord.cost_microusd), 0).label("cost_microusd"),
+            func.avg(ProviderAttemptRecord.latency_ms).label("average_latency_ms"),
+        )
+        .join(RequestRecord, RequestRecord.request_id == ProviderAttemptRecord.request_id)
+        .outerjoin(Route, Route.id == ProviderAttemptRecord.route_id)
+        .where(*filters)
+        .group_by(ProviderAttemptRecord.route_id, Route.name, ProviderAttemptRecord.provider)
+        .order_by(func.count().desc(), ProviderAttemptRecord.provider)
+    )
+    async with database.sessions() as session:
+        rows = (await session.execute(statement)).all()
+    total_attempts = sum(int(row.attempts) for row in rows)
+    return JSONResponse(
+        {
+            "start": resolved_start.isoformat(),
+            "end": resolved_end.isoformat(),
+            "total_attempts": total_attempts,
+            "routes": [
+                {
+                    "route_id": str(row.route_id) if row.route_id else None,
+                    "route_name": row.route_name,
+                    "provider": row.provider,
+                    "attempts": int(row.attempts),
+                    "attempt_share_percent": round(int(row.attempts) * 100 / total_attempts, 2)
+                    if total_attempts
+                    else 0,
+                    "successful_attempts": int(row.successful),
+                    "failed_attempts": int(row.failed),
+                    "in_flight_attempts": int(row.in_flight),
                     "total_tokens": int(row.total_tokens),
                     "cost_microusd": int(row.cost_microusd),
                     "average_latency_ms": round(float(row.average_latency_ms), 2)

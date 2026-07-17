@@ -130,6 +130,8 @@ Implemented so far:
   application keys, encrypted provider credentials, and routes.
 - One-time application key issuance, key revocation, provider secret rotation,
   and route traffic controls required for gradual cutover and rollback.
+- Route/provider attempt distribution API and React console visibility for
+  weighted traffic, retries, fallback load, tokens, cost, and latency.
 
 Verification:
 
@@ -142,6 +144,9 @@ Verification:
 - Disabling the route stopped traffic with `503`, re-enabling restored the route,
   provider secret rotation completed without disclosure, and revoking the
   application key rejected subsequent traffic with `401`.
+- Route distribution was checked against existing attempt records: one failed
+  primary attempt and one successful fallback attempt appeared as separate 50%
+  shares, with tokens and cost attributed only to the reporting fallback.
 
 Deliverables:
 
