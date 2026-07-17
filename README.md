@@ -116,6 +116,18 @@ Authorization: Bearer <operator key>
 策略接口使用完整替换：请求速率、并发、每日 token、日/月预算和精确缓存 TTL
 都必须提供，正整数表示启用，`null` 表示关闭。数据库路由会在后续请求中读取新策略。
 
+切流前可以运行协议兼容性检查：
+
+```sh
+export NORTHGATE_VERIFY_BASE_URL=http://127.0.0.1:8080/v1/gateways/example/openai
+export NORTHGATE_VERIFY_APPLICATION_KEY=<Northgate application key>
+export NORTHGATE_VERIFY_MODEL=<model>
+uv run northgate-verify
+```
+
+该命令验证非流式、SSE 流式和 tool call，不输出密钥或请求/响应内容。完整 canary、
+观测和两级回滚流程见[现有系统接入指南](docs/integration-guide.md)。
+
 ## 通过环境变量配置首个网关
 
 生成应用密钥摘要，并在 `.env` 中设置摘要和供应商凭证：
@@ -322,6 +334,7 @@ NORTHGATE_RESTORE_CONFIRM=northgate ./scripts/compose-restore.sh <backup.dump>
 - [系统架构](docs/architecture.md)
 - [API 设计](docs/api-design.md)
 - [集成边界](docs/integration-boundaries.md)
+- [现有系统接入指南](docs/integration-guide.md)
 - [项目路线图](docs/roadmap.md)
 - [开发与验证流程](docs/development.md)
 - [架构决策](docs/decisions/README.md)

@@ -30,6 +30,7 @@ dev = [
 [project.scripts]
 northgate = "northgate.main:main"
 northgate-bootstrap = "northgate.bootstrap:main"
+northgate-verify = "northgate.verify:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -133,6 +133,7 @@ Implemented so far:
 - Route/provider attempt distribution API and React console visibility for
   weighted traffic, retries, fallback load, tokens, cost, and latency.
 - Gateway policy control API for request, concurrency, token, spend, and exact-cache limits.
+- Environment-driven compatibility verifier and a canary, reconciliation, and rollback guide.
 
 Verification:
 
@@ -151,6 +152,9 @@ Verification:
 - Policy creation and replacement were exercised against an isolated database:
   create returned `201`, replacement returned `200`, explicit `null` disabled
   limits, invalid zero values returned `422`, and an unknown gateway returned `404`.
+- The compatibility command passed non-streaming, SSE, and tool-call checks through
+  a real local Northgate process. The first SSE event arrived in 18 ms while the
+  mock stream remained open for about 5 seconds, confirming incremental delivery.
 
 Deliverables:
 
