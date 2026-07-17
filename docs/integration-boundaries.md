@@ -1,7 +1,7 @@
 # Integration boundaries
 
-Status: proposed  
-Last reviewed: 2026-07-15
+Status: partially implemented
+Last reviewed: 2026-07-17
 
 ## Northgate and Dayboard
 
@@ -25,6 +25,12 @@ Dayboard should attach bounded `Northgate-Metadata` containing `tenant_id`,
 `user_id`, and `run_id`. Northgate accepts only dimensions allowed by the
 resolved application key. These values provide attribution; they never grant
 authorization.
+
+Dayboard commit `3429776` implements this header behind the default-off
+`DAYBOARD_NORTHGATE_METADATA_ENABLED` setting. It uses trusted server context and
+the durable run ID; browser input, model content, and queue payloads cannot supply
+or override the values. North commit `10d2280` provides the host-controlled model
+header boundary used by Dayboard.
 
 Dayboard's existing `provider_usage_records` may remain temporarily for business
 audit and reconciliation. Northgate becomes the authoritative cross-application
@@ -63,3 +69,4 @@ Sharing infrastructure does not permit sharing application tables or secrets.
 7. Make Northgate analytics authoritative after discrepancies are understood.
 
 Rollback consists of restoring Dayboard's previous provider base URL and key.
+The integration is canary-ready; production traffic has not been declared migrated.

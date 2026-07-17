@@ -155,6 +155,10 @@ Verification:
 - The compatibility command passed non-streaming, SSE, and tool-call checks through
   a real local Northgate process. The first SSE event arrived in 18 ms while the
   mock stream remained open for about 5 seconds, confirming incremental delivery.
+- The Dayboard-pinned LangChain/OpenAI client sent trusted tenant, user, and run
+  metadata through a real Northgate process to the mock provider. North `10d2280`
+  and Dayboard `3429776` contain the default-off, rollback-safe integration path;
+  no production traffic migration is claimed yet.
 
 Deliverables:
 
