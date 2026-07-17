@@ -12,6 +12,7 @@ from northgate import __version__
 from northgate.analytics import usage_attempts, usage_summary, usage_timeseries
 from northgate.config import Settings, get_settings
 from northgate.console import console_index
+from northgate.control import router as control_router
 from northgate.credentials import CredentialCipher
 from northgate.db.database import Database
 from northgate.exact_cache import ExactCache
@@ -66,16 +67,21 @@ def create_app(
         active_redis = Redis.from_url(settings.redis_url.get_secret_value())
         owns_redis = True
 
+    encryption_key = settings.credential_encryption_key
+    credential_cipher = (
+        CredentialCipher(encryption_key.get_secret_value())
+        if encryption_key is not None and encryption_key.get_secret_value()
+        else None
+    )
     route_resolver = None
     if settings.routing_source == "database":
-        encryption_key = settings.credential_encryption_key
-        if encryption_key is None or not encryption_key.get_secret_value():
+        if credential_cipher is None:
             raise ValueError("NORTHGATE_CREDENTIAL_ENCRYPTION_KEY is required for database routing")
         if active_database is None:
             raise RuntimeError("Database routing requires a database")
         route_resolver = DatabaseRouteResolver(
             active_database,
-            CredentialCipher(encryption_key.get_secret_value()),
+            credential_cipher,
         )
     tracing = (
         Tracing(settings, __version__, span_exporter=span_exporter)
@@ -119,6 +125,7 @@ def create_app(
     app.state.settings = settings
     app.state.console_directory = settings.console_directory
     app.state.database = active_database
+    app.state.credential_cipher = credential_cipher
     app.state.route_resolver = route_resolver
     app.state.metrics = metrics
     app.state.tracing = tracing
@@ -163,6 +170,7 @@ def create_app(
         proxy_chat_completions,
         methods=["POST"],
     )
+    app.include_router(control_router)
     if metrics is not None:
         app.add_api_route("/metrics", metrics_response, methods=["GET"], include_in_schema=False)
     app.add_api_route("/api/v1/usage/summary", usage_summary, methods=["GET"])

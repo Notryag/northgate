@@ -134,6 +134,27 @@ async def test_application_key_cannot_access_operator_analytics() -> None:
     assert operator.status_code == 503
 
 
+@pytest.mark.anyio
+async def test_control_plane_requires_operator_key() -> None:
+    operator_key = "operator-test"
+    app = create_app(
+        Settings(
+            environment="test",
+            operator_key_sha256=SecretStr(sha256(operator_key.encode()).hexdigest()),
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unauthorized = await client.get(
+            "/api/v1/organizations", headers={"Authorization": "Bearer application-key"}
+        )
+        operator = await client.get(
+            "/api/v1/organizations", headers={"Authorization": f"Bearer {operator_key}"}
+        )
+
+    assert unauthorized.status_code == 401
+    assert operator.status_code == 503
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"

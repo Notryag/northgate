@@ -7,7 +7,7 @@ Date: 2026-07-16
 
 The initial operator API uses a dedicated bearer key configured as a SHA-256
 digest. It is separate from data-plane application keys and is required for all
-cross-project analytics endpoints.
+control-plane and cross-project analytics endpoints.
 
 ## Rationale
 

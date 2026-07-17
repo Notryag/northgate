@@ -1,11 +1,10 @@
 # API design
 
 Status: partially implemented  
-Last reviewed: 2026-07-15
+Last reviewed: 2026-07-17
 
-The OpenAI chat-completions path is implemented for one configuration-backed
-gateway and provider credential. Other paths and control-plane schemas remain
-design proposals.
+The OpenAI chat-completions path and initial database-backed control plane are
+implemented. Other provider-native paths remain design proposals.
 
 ## Protocol strategy
 
@@ -137,7 +136,7 @@ keys are not control-plane credentials.
 attempt ledger to operators. Retry and fallback happen only before downstream
 response headers are sent; mid-stream failures terminate the stream.
 
-## Proposed control-plane resources
+## Implemented control-plane resources
 
 ```text
 /api/v1/organizations
@@ -146,10 +145,31 @@ response headers are sent; mid-stream failures terminate the stream.
 /api/v1/provider-credentials
 /api/v1/gateways
 /api/v1/routes
-/api/v1/policies
 /api/v1/usage
-/api/v1/audit-events
 ```
 
-Control-plane authentication, role model, and exact schemas must be accepted
-before these endpoints are implemented.
+All endpoints require the dedicated operator bearer key. List endpoints accept
+an optional parent resource ID as a query filter. Create endpoints accept JSON:
+
+```text
+POST /api/v1/organizations             {name}
+POST /api/v1/projects                  {organization_id, name}
+POST /api/v1/gateways                  {project_id, slug}
+POST /api/v1/application-keys          {project_id, name, allowed_metadata_keys}
+POST /api/v1/provider-credentials      {project_id, name, provider, base_url,
+                                        adapter, adapter_config, api_key}
+POST /api/v1/routes                    {gateway_id, provider_credential_id, name,
+                                        priority, weight, match_metadata, ...}
+```
+
+Application key creation returns the plaintext `key` exactly once; list responses
+never expose its digest. Provider credential create and secret-rotation responses
+never return plaintext or ciphertext. `POST /application-keys/{id}/revoke`,
+`PUT /provider-credentials/{id}/secret`, and `PATCH /routes/{id}` provide the
+minimum lifecycle operations needed for integration, credential rotation, traffic
+weight changes, and rollback. A route cannot join a gateway and provider credential
+from different projects.
+
+Policy management and audit-event APIs remain proposed. The initial operator key
+has organization-wide authority; fine-grained users and roles remain a later
+control-plane decision.

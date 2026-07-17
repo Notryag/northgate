@@ -1,6 +1,4 @@
 from datetime import UTC, datetime, timedelta
-from hashlib import sha256
-from hmac import compare_digest
 from typing import Literal
 from uuid import UUID
 
@@ -8,32 +6,11 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import case, func, select
 
-from northgate.config import Settings
 from northgate.db.database import Database
 from northgate.db.models import ProviderAttemptRecord, RequestRecord
+from northgate.operator_auth import authorize_operator
 
 _MAX_RANGE = timedelta(days=90)
-
-
-def _authorize(request: Request) -> JSONResponse | None:
-    settings: Settings = request.app.state.settings
-    expected = settings.operator_key_sha256
-    if expected is None or not expected.get_secret_value():
-        return JSONResponse(
-            {"error": {"code": "OPERATOR_AUTH_UNAVAILABLE", "message": "Operator API unavailable"}},
-            status_code=503,
-        )
-    scheme, separator, credential = request.headers.get("authorization", "").partition(" ")
-    actual = (
-        sha256(credential.encode()).hexdigest() if separator and scheme.lower() == "bearer" else ""
-    )
-    if not compare_digest(actual, expected.get_secret_value()):
-        return JSONResponse(
-            {"error": {"code": "INVALID_OPERATOR_KEY", "message": "Invalid operator key"}},
-            status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return None
 
 
 def _range(start: datetime | None, end: datetime | None) -> tuple[datetime, datetime] | None:
@@ -57,7 +34,7 @@ async def usage_summary(
     project_id: UUID | None = None,
     gateway_id: UUID | None = None,
 ) -> Response:
-    authorization_error = _authorize(request)
+    authorization_error = authorize_operator(request)
     if authorization_error is not None:
         return authorization_error
     selected_range = _range(start, end)
@@ -120,7 +97,7 @@ async def usage_timeseries(
     project_id: UUID | None = None,
     gateway_id: UUID | None = None,
 ) -> Response:
-    authorization_error = _authorize(request)
+    authorization_error = authorize_operator(request)
     if authorization_error is not None:
         return authorization_error
     selected_range = _range(start, end)
@@ -182,7 +159,7 @@ async def usage_timeseries(
 
 
 async def usage_attempts(request: Request, request_id: str) -> Response:
-    authorization_error = _authorize(request)
+    authorization_error = authorize_operator(request)
     if authorization_error is not None:
         return authorization_error
     database = _database(request)

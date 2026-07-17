@@ -120,7 +120,44 @@ Exit criteria:
 
 - Failure-injection tests verify routing and retry behavior without duplicate billing attempts hidden from operators.
 
-## M4: Open-source operations
+## M4: Existing-system adoption
+
+Status: in progress
+
+Implemented so far:
+
+- Operator-authenticated control APIs for organizations, projects, gateways,
+  application keys, encrypted provider credentials, and routes.
+- One-time application key issuance, key revocation, provider secret rotation,
+  and route traffic controls required for gradual cutover and rollback.
+
+Verification:
+
+- On 2026-07-17, an isolated PostgreSQL database was configured entirely through
+  the control API, then used for a real OpenAI-compatible request through the
+  database route to the mock provider.
+- Operator authentication rejected an invalid key; application and provider
+  credential lists exposed no secret or digest material; encrypted storage was
+  checked for plaintext absence.
+- Disabling the route stopped traffic with `503`, re-enabling restored the route,
+  provider secret rotation completed without disclosure, and revoking the
+  application key rejected subsequent traffic with `401`.
+
+Deliverables:
+
+- Configure a new application without direct database access or bootstrap-only environment variables.
+- Document base URL replacement, application metadata, canary traffic, and rollback.
+- Validate non-streaming, streaming, tool calls, timeout, retry, and fallback compatibility.
+- Reconcile provider attempts, tokens, and cost during a real application canary period.
+
+Exit criteria:
+
+- An existing OpenAI-compatible application can move a bounded traffic share to
+  Northgate and return to its prior provider path without a code change.
+- Operators can explain traffic distribution and every provider attempt from
+  Northgate records and metrics.
+
+## M5: Open-source operations
 
 Status: in progress
 
@@ -134,7 +171,7 @@ Implemented so far:
 Deliverables:
 
 - Stable configuration and migration policy.
-- Helm chart or equivalent production deployment path.
+- A production deployment path appropriate to demonstrated adoption needs.
 - Backup, restore, upgrade, and incident guides.
 - OpenTelemetry and Prometheus export.
 - Security policy, contribution guide, and selected open-source license.
@@ -142,6 +179,9 @@ Deliverables:
 Exit criteria:
 
 - A clean environment can deploy, upgrade, back up, and restore Northgate using only public documentation.
+
+Kubernetes and Helm packaging are intentionally not current priorities. They can
+be selected later if real deployments require them.
 
 ## Deferred
 
