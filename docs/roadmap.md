@@ -132,6 +132,7 @@ Implemented so far:
   and route traffic controls required for gradual cutover and rollback.
 - Route/provider attempt distribution API and React console visibility for
   weighted traffic, retries, fallback load, tokens, cost, and latency.
+- Gateway policy control API for request, concurrency, token, spend, and exact-cache limits.
 
 Verification:
 
@@ -147,6 +148,9 @@ Verification:
 - Route distribution was checked against existing attempt records: one failed
   primary attempt and one successful fallback attempt appeared as separate 50%
   shares, with tokens and cost attributed only to the reporting fallback.
+- Policy creation and replacement were exercised against an isolated database:
+  create returned `201`, replacement returned `200`, explicit `null` disabled
+  limits, invalid zero values returned `422`, and an unknown gateway returned `404`.
 
 Deliverables:
 

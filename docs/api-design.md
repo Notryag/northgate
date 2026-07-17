@@ -147,6 +147,7 @@ response headers are sent; mid-stream failures terminate the stream.
 /api/v1/provider-credentials
 /api/v1/gateways
 /api/v1/routes
+/api/v1/policies
 /api/v1/usage
 ```
 
@@ -162,6 +163,10 @@ POST /api/v1/provider-credentials      {project_id, name, provider, base_url,
                                         adapter, adapter_config, api_key}
 POST /api/v1/routes                    {gateway_id, provider_credential_id, name,
                                         priority, weight, match_metadata, ...}
+PUT  /api/v1/policies/{gateway_id}     {requests_per_minute, concurrent_requests,
+                                        tokens_per_day, daily_spend_microusd,
+                                        monthly_spend_microusd,
+                                        exact_cache_ttl_seconds}
 ```
 
 Application key creation returns the plaintext `key` exactly once; list responses
@@ -172,6 +177,10 @@ minimum lifecycle operations needed for integration, credential rotation, traffi
 weight changes, and rollback. A route cannot join a gateway and provider credential
 from different projects.
 
-Policy management and audit-event APIs remain proposed. The initial operator key
-has organization-wide authority; fine-grained users and roles remain a later
-control-plane decision.
+Policy replacement requires every field. A positive integer enables the limit;
+`null` disables it. The response is `201` when the gateway policy is first
+created and `200` on replacement. `GET /api/v1/policies` accepts an optional
+`gateway_id` filter.
+
+Audit-event APIs remain proposed. The initial operator key has organization-wide
+authority; fine-grained users and roles remain a later control-plane decision.

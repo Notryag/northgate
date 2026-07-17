@@ -17,6 +17,7 @@ from northgate.db.database import Database
 from northgate.db.models import (
     ApplicationKey,
     Gateway,
+    GatewayPolicy,
     Organization,
     Project,
     ProviderCredential,
@@ -143,6 +144,15 @@ class RouteUpdate(BaseModel):
     enabled: bool | None = None
 
 
+class GatewayPolicyReplace(BaseModel):
+    requests_per_minute: int | None = Field(ge=1, le=10_000_000)
+    concurrent_requests: int | None = Field(ge=1, le=100_000)
+    tokens_per_day: int | None = Field(ge=1, le=2_000_000_000)
+    daily_spend_microusd: int | None = Field(ge=1, le=9_000_000_000_000_000)
+    monthly_spend_microusd: int | None = Field(ge=1, le=9_000_000_000_000_000)
+    exact_cache_ttl_seconds: int | None = Field(ge=1, le=86_400)
+
+
 def _error(code: str, message: str, status_code: int) -> JSONResponse:
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status_code)
 
@@ -175,7 +185,13 @@ def _preflight(request: Request, *, credential_write: bool = False) -> Response 
 
 
 def _common(
-    resource: Organization | Project | Gateway | ApplicationKey | ProviderCredential | Route,
+    resource: Organization
+    | Project
+    | Gateway
+    | ApplicationKey
+    | ProviderCredential
+    | Route
+    | GatewayPolicy,
 ) -> dict[str, object]:
     return {
         "id": resource.id,
@@ -553,3 +569,56 @@ async def update_route(request: Request, route_id: UUID, payload: RouteUpdate) -
             "enabled": resource.enabled,
         }
     )
+
+
+def _policy(resource: GatewayPolicy) -> dict[str, object]:
+    return {
+        **_common(resource),
+        "gateway_id": resource.gateway_id,
+        "requests_per_minute": resource.requests_per_minute,
+        "concurrent_requests": resource.concurrent_requests,
+        "tokens_per_day": resource.tokens_per_day,
+        "daily_spend_microusd": resource.daily_spend_microusd,
+        "monthly_spend_microusd": resource.monthly_spend_microusd,
+        "exact_cache_ttl_seconds": resource.exact_cache_ttl_seconds,
+    }
+
+
+@router.get("/policies")
+async def list_policies(request: Request, gateway_id: UUID | None = None) -> Response:
+    if error := _preflight(request):
+        return error
+    statement = select(GatewayPolicy).order_by(GatewayPolicy.created_at)
+    if gateway_id is not None:
+        statement = statement.where(GatewayPolicy.gateway_id == gateway_id)
+    database = _database(request)
+    assert database is not None
+    async with database.sessions() as session:
+        resources = (await session.scalars(statement)).all()
+    return _json([_policy(item) for item in resources])
+
+
+@router.put("/policies/{gateway_id}")
+async def replace_policy(
+    request: Request, gateway_id: UUID, payload: GatewayPolicyReplace
+) -> Response:
+    if error := _preflight(request):
+        return error
+    database = _database(request)
+    assert database is not None
+    async with database.sessions() as session:
+        if await session.get(Gateway, gateway_id) is None:
+            return _error("GATEWAY_NOT_FOUND", "Gateway not found", 404)
+        resource = await session.scalar(
+            select(GatewayPolicy).where(GatewayPolicy.gateway_id == gateway_id)
+        )
+        created = resource is None
+        if resource is None:
+            resource = GatewayPolicy(gateway_id=gateway_id, **payload.model_dump())
+            session.add(resource)
+        else:
+            for key, value in payload.model_dump().items():
+                setattr(resource, key, value)
+        await session.commit()
+        await session.refresh(resource)
+    return _json(_policy(resource), 201 if created else 200)

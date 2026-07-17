@@ -106,11 +106,15 @@ POST /api/v1/gateways
 POST /api/v1/application-keys
 POST /api/v1/provider-credentials
 POST /api/v1/routes
+PUT  /api/v1/policies/{gateway_id}
 Authorization: Bearer <operator key>
 ```
 
 应用密钥明文只在创建响应中返回一次；供应商 API key 经加密后写入 PostgreSQL，
 创建、查询和轮换接口都不会回显。完整字段及生命周期接口见 [API 设计](docs/api-design.md)。
+
+策略接口使用完整替换：请求速率、并发、每日 token、日/月预算和精确缓存 TTL
+都必须提供，正整数表示启用，`null` 表示关闭。数据库路由会在后续请求中读取新策略。
 
 ## 通过环境变量配置首个网关
 
