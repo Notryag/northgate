@@ -18,6 +18,26 @@ keeping rollback independent from Northgate itself.
 4. Use a non-production model or account when possible. Compatibility checks make
    real provider requests and may incur cost.
 
+For applications on the shared platform Docker network, use the platform Compose
+override while retaining Northgate's private PostgreSQL and Redis network:
+
+```sh
+export COMPOSE_FILE=docker-compose.yml:docker-compose.platform.yml
+docker compose config --quiet
+docker compose build northgate
+docker compose run --rm --no-deps northgate alembic upgrade head
+docker compose up -d --wait
+```
+
+The Northgate application joins both networks and is reachable as
+`http://northgate:8080` from platform containers. Its PostgreSQL and Redis services
+remain only on the private `northgate-dev` network. The override binds host access
+to `127.0.0.1:8081` by default to avoid the platform's existing port 8080 service.
+Set `PLATFORM_INFRA_NETWORK` only when the external network uses a different name.
+
+Keep `COMPOSE_FILE` set when running Northgate backup, restore, or upgrade scripts;
+Docker Compose will apply the same deployment topology.
+
 ## Verify the protocol
 
 Set the gateway's OpenAI prefix, not the final chat-completions path:

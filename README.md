@@ -92,6 +92,20 @@ GET http://127.0.0.1:8080/health/ready
 docker compose up --build
 ```
 
+接入同机 `platform-infra` 网络时使用 Compose override，Northgate 的 PostgreSQL
+和 Redis 仍保留在独立私有网络：
+
+```sh
+export COMPOSE_FILE=docker-compose.yml:docker-compose.platform.yml
+docker compose config --quiet
+docker compose build northgate
+docker compose run --rm --no-deps northgate alembic upgrade head
+docker compose up -d --wait
+```
+
+平台容器通过 `http://northgate:8080` 访问，宿主机默认通过
+`http://127.0.0.1:8081` 访问。
+
 ## 通过控制 API 接入应用
 
 数据库路由模式下，Operator API 可以完成新应用接入，不需要直接修改数据库。

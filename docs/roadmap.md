@@ -134,6 +134,8 @@ Implemented so far:
   weighted traffic, retries, fallback load, tokens, cost, and latency.
 - Gateway policy control API for request, concurrency, token, spend, and exact-cache limits.
 - Environment-driven compatibility verifier and a canary, reconciliation, and rollback guide.
+- Compose platform-network override that keeps Northgate data stores isolated while
+  exposing the gateway to existing application containers.
 
 Verification:
 

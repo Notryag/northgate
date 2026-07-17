@@ -1,0 +1,14 @@
+services:
+  northgate:
+    environment:
+      NORTHGATE_ENVIRONMENT: production
+    ports: !override
+      - "${NORTHGATE_HTTP_BIND:-127.0.0.1:8081}:8080"
+    networks:
+      - default
+      - platform-infra
+
+networks:
+  platform-infra:
+    name: ${PLATFORM_INFRA_NETWORK:-platform-infra}
+    external: true
