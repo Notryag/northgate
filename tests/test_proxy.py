@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from northgate.app import create_app
 from northgate.config import Settings
+from northgate.route_health import RouteHealthDecision
 
 APPLICATION_KEY = "ng_test_application"
 PROVIDER_KEY = "provider-secret"
@@ -209,6 +210,55 @@ async def test_route_retry_is_bounded_before_fallback() -> None:
     assert response.status_code == 200
     assert response.headers["Northgate-Attempts"] == "2"
     assert call_count == 2
+
+
+@pytest.mark.anyio
+async def test_open_route_is_skipped_without_incrementing_provider_attempts() -> None:
+    class RouteHealthStub:
+        def __init__(self) -> None:
+            self.failed_routes: set[str] = set()
+
+        async def allow(self, *, route_key: str, **_: object) -> RouteHealthDecision:
+            return RouteHealthDecision(allowed=route_key not in self.failed_routes)
+
+        async def record_failure(self, *, route_key: str, **_: object) -> int:
+            self.failed_routes.add(route_key)
+            return 1
+
+        async def record_success(self, **_: object) -> None:
+            return None
+
+    calls: list[str] = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host or "")
+        await request.aread()
+        if request.url.host == "provider.test":
+            raise httpx.ConnectError("primary unavailable", request=request)
+        return httpx.Response(200, json={"id": "fallback-success"})
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(
+            provider_retry_backoff_ms=0,
+            fallback_provider_name="backup",
+            fallback_provider_base_url="https://fallback.test/v1",
+            fallback_provider_api_key=SecretStr("fallback-secret"),
+            route_health_enabled=True,
+            route_health_failure_threshold=1,
+        ),
+        upstream_client=upstream_client,
+    )
+    app.state.route_health_engine = RouteHealthStub()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(PROXY_PATH, json={}, headers=_authorization())
+        second = await client.post(PROXY_PATH, json={}, headers=_authorization())
+    await upstream_client.aclose()
+
+    assert first.status_code == second.status_code == 200
+    assert first.headers["Northgate-Attempts"] == "2"
+    assert second.headers["Northgate-Attempts"] == "1"
+    assert calls == ["provider.test", "fallback.test", "fallback.test"]
 
 
 class GatedStream(httpx.AsyncByteStream):

@@ -22,6 +22,7 @@ from northgate.policy import (
     PolicyUnavailableError,
 )
 from northgate.pricing import PriceQuote, PricingRepository, configured_price
+from northgate.route_health import RouteHealthEngine, RouteHealthUnavailableError
 from northgate.routing import (
     DatabaseRouteResolver,
     ForbiddenGatewayError,
@@ -232,6 +233,36 @@ async def _consume_retryable_response(
     return usage, cost_microusd
 
 
+def _route_health_key(route: ResolvedRoute) -> str:
+    if route.route_id is not None:
+        return str(route.route_id)
+    identity = f"{route.provider}\0{route.base_url.rstrip('/')}"
+    return sha256(identity.encode()).hexdigest()
+
+
+async def _record_route_health(
+    engine: RouteHealthEngine | None,
+    route: ResolvedRoute,
+    *,
+    route_key: str,
+    token: str,
+    failed: bool,
+) -> None:
+    if engine is None or route.health_failure_threshold <= 0:
+        return
+    now_ms = int(time.time() * 1000)
+    if failed:
+        await engine.record_failure(
+            route_key=route_key,
+            token=token,
+            now_ms=now_ms,
+            threshold=route.health_failure_threshold,
+            recovery_seconds=route.health_recovery_seconds,
+        )
+    else:
+        await engine.record_success(route_key=route_key, token=token, now_ms=now_ms)
+
+
 async def _response_body(
     response: httpx.Response,
     *,
@@ -245,9 +276,13 @@ async def _response_body(
     attempt_id: UUID | None,
     attempt_started_at: float,
     totals: AttemptTotals,
+    route_health_engine: RouteHealthEngine | None,
+    route_health_key: str,
+    route_health_token: str,
 ) -> AsyncIterator[bytes]:
     accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
     outcome = "succeeded" if response.status_code < 400 else "provider_error"
+    transport_failed = False
     try:
         if response.is_stream_consumed:
             accumulator.observe(response.content)
@@ -262,10 +297,29 @@ async def _response_body(
         raise
     except httpx.TransportError:
         outcome = "provider_error"
+        transport_failed = True
         totals.ambiguous = True
         raise
     finally:
         await response.aclose()
+        if outcome != "client_disconnected":
+            health_failed = transport_failed or (
+                response.status_code in route.health_failure_status_codes
+            )
+            try:
+                await _record_route_health(
+                    route_health_engine,
+                    route,
+                    route_key=route_health_key,
+                    token=route_health_token,
+                    failed=health_failed,
+                )
+            except RouteHealthUnavailableError:
+                await logger.aexception(
+                    "route_health_settlement_failed",
+                    route=route_health_key,
+                    northgate_request_id=request_id,
+                )
         usage = accumulator.result()
         cost_microusd = (
             price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
@@ -548,13 +602,78 @@ async def proxy_chat_completions(
     ]
     totals = AttemptTotals()
     client: httpx.AsyncClient = request.app.state.upstream_client
+    route_health_engine: RouteHealthEngine | None = request.app.state.route_health_engine
     last_route = route
     last_price = price
     last_failure = "provider_unavailable"
+    provider_attempt_count = 0
 
     for plan_index, (candidate, candidate_price) in enumerate(attempt_plan):
-        attempt_index = plan_index + 1
-        has_next = attempt_index < len(attempt_plan)
+        has_next = plan_index + 1 < len(attempt_plan)
+        health_route_key = _route_health_key(candidate)
+        health_token = f"{request_id}:{plan_index + 1}"
+        if candidate.health_failure_threshold > 0:
+            if route_health_engine is None:
+                health_error = True
+            else:
+                try:
+                    decision = await route_health_engine.allow(
+                        route_key=health_route_key,
+                        token=health_token,
+                        now_ms=int(time.time() * 1000),
+                        recovery_seconds=candidate.health_recovery_seconds,
+                    )
+                    health_error = False
+                except RouteHealthUnavailableError:
+                    health_error = True
+            if health_error:
+                if recorder is not None:
+                    await _settle_safely(
+                        recorder,
+                        request_id=request_id,
+                        outcome="route_health_unavailable",
+                        status_code=503,
+                        provider_request_id=None,
+                        started_at=started_at,
+                        usage=totals.usage(),
+                        cost_microusd=totals.cost_microusd if totals.has_cost else None,
+                        first_token_ms=None,
+                        final_route=candidate,
+                        price_id=(
+                            candidate_price.price_id if candidate_price is not None else None
+                        ),
+                    )
+                if policy_engine is not None and policy_lease is not None:
+                    await policy_engine.settle(
+                        policy_lease,
+                        None if totals.ambiguous else totals.usage().total_tokens,
+                        None
+                        if totals.ambiguous
+                        else totals.cost_microusd
+                        if totals.has_cost
+                        else None,
+                    )
+                return _error(
+                    request,
+                    status_code=503,
+                    code="ROUTE_HEALTH_UNAVAILABLE",
+                    message="Route health state is unavailable",
+                    retryable=True,
+                    headers=policy_lease.headers if policy_lease is not None else None,
+                )
+            if not decision.allowed:
+                last_route = candidate
+                last_price = candidate_price
+                last_failure = "routes_unhealthy"
+                await logger.ainfo(
+                    "provider_route_skipped",
+                    route=health_route_key,
+                    northgate_request_id=request_id,
+                )
+                continue
+
+        provider_attempt_count += 1
+        attempt_index = provider_attempt_count
         attempt_started_at = time.perf_counter()
         attempt_id: UUID | None = None
         if recorder is not None:
@@ -615,6 +734,16 @@ async def proxy_chat_completions(
                 usage=UsageResult(),
                 cost_microusd=None,
             )
+            try:
+                await _record_route_health(
+                    route_health_engine,
+                    candidate,
+                    route_key=health_route_key,
+                    token=health_token,
+                    failed=True,
+                )
+            except RouteHealthUnavailableError:
+                await logger.aexception("route_health_settlement_failed", route=health_route_key)
         except httpx.TransportError as exc:
             is_connection_failure = isinstance(exc, httpx.ConnectError)
             if not is_connection_failure:
@@ -630,6 +759,16 @@ async def proxy_chat_completions(
                 usage=UsageResult(),
                 cost_microusd=None,
             )
+            try:
+                await _record_route_health(
+                    route_health_engine,
+                    candidate,
+                    route_key=health_route_key,
+                    token=health_token,
+                    failed=True,
+                )
+            except RouteHealthUnavailableError:
+                await logger.aexception("route_health_settlement_failed", route=health_route_key)
         else:
             if response.status_code in candidate.retry_status_codes and has_next:
                 try:
@@ -650,6 +789,18 @@ async def proxy_chat_completions(
                         usage=UsageResult(),
                         cost_microusd=None,
                     )
+                    try:
+                        await _record_route_health(
+                            route_health_engine,
+                            candidate,
+                            route_key=health_route_key,
+                            token=health_token,
+                            failed=True,
+                        )
+                    except RouteHealthUnavailableError:
+                        await logger.aexception(
+                            "route_health_settlement_failed", route=health_route_key
+                        )
                 else:
                     totals.add(retry_usage, retry_cost)
                     await _settle_attempt_safely(
@@ -662,6 +813,18 @@ async def proxy_chat_completions(
                         usage=retry_usage,
                         cost_microusd=retry_cost,
                     )
+                    try:
+                        await _record_route_health(
+                            route_health_engine,
+                            candidate,
+                            route_key=health_route_key,
+                            token=health_token,
+                            failed=(response.status_code in candidate.health_failure_status_codes),
+                        )
+                    except RouteHealthUnavailableError:
+                        await logger.aexception(
+                            "route_health_settlement_failed", route=health_route_key
+                        )
             else:
                 return StreamingResponse(
                     _response_body(
@@ -676,13 +839,16 @@ async def proxy_chat_completions(
                         attempt_id=attempt_id,
                         attempt_started_at=attempt_started_at,
                         totals=totals,
+                        route_health_engine=route_health_engine,
+                        route_health_key=health_route_key,
+                        route_health_token=health_token,
                     ),
                     status_code=response.status_code,
                     headers=_downstream_headers(
                         response,
                         candidate,
                         policy_lease.headers if policy_lease is not None else {},
-                        attempt_index,
+                        provider_attempt_count,
                     ),
                 )
 
@@ -695,7 +861,13 @@ async def proxy_chat_completions(
             )
             await asyncio.sleep(backoff_ms / 1000)
 
-    status_code = 504 if last_failure == "provider_timeout" else 502
+    status_code = (
+        504
+        if last_failure == "provider_timeout"
+        else 503
+        if last_failure == "routes_unhealthy"
+        else 502
+    )
     error_code = (
         "PROVIDER_TIMEOUT" if last_failure == "provider_timeout" else "PROVIDER_UNAVAILABLE"
     )

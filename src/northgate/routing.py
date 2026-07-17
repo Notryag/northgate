@@ -56,6 +56,9 @@ class ResolvedRoute:
     policy: PolicyLimits
     max_retries: int = 0
     retry_status_codes: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+    health_failure_threshold: int = 0
+    health_recovery_seconds: int = 30
+    health_failure_status_codes: frozenset[int] = frozenset({500, 502, 503, 504})
 
 
 class DatabaseRouteResolver:
@@ -124,6 +127,9 @@ class DatabaseRouteResolver:
                     ),
                     max_retries=route.max_retries,
                     retry_status_codes=frozenset(route.retry_status_codes),
+                    health_failure_threshold=route.health_failure_threshold,
+                    health_recovery_seconds=route.health_recovery_seconds,
+                    health_failure_status_codes=frozenset(route.health_failure_status_codes),
                 )
             )
         return resolved
@@ -156,6 +162,15 @@ def configured_route(settings: Settings) -> ResolvedRoute:
             for code in settings.provider_retry_status_codes.split(",")
             if code.strip()
         ),
+        health_failure_threshold=(
+            settings.route_health_failure_threshold if settings.route_health_enabled else 0
+        ),
+        health_recovery_seconds=settings.route_health_recovery_seconds,
+        health_failure_status_codes=frozenset(
+            int(code.strip())
+            for code in settings.route_health_failure_status_codes.split(",")
+            if code.strip()
+        ),
     )
 
 
@@ -182,5 +197,8 @@ def configured_routes(settings: Settings) -> list[ResolvedRoute]:
             policy=primary.policy,
             max_retries=settings.fallback_provider_max_retries,
             retry_status_codes=primary.retry_status_codes,
+            health_failure_threshold=primary.health_failure_threshold,
+            health_recovery_seconds=primary.health_recovery_seconds,
+            health_failure_status_codes=primary.health_failure_status_codes,
         ),
     ]

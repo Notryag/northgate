@@ -146,9 +146,15 @@ NORTHGATE_FALLBACK_PROVIDER_NAME=backup
 NORTHGATE_FALLBACK_PROVIDER_BASE_URL=https://backup.example.com/v1
 NORTHGATE_FALLBACK_PROVIDER_API_KEY=<backup key>
 NORTHGATE_FALLBACK_PROVIDER_MAX_RETRIES=0
+NORTHGATE_ROUTE_HEALTH_ENABLED=true
+NORTHGATE_ROUTE_HEALTH_FAILURE_THRESHOLD=3
+NORTHGATE_ROUTE_HEALTH_RECOVERY_SECONDS=30
+NORTHGATE_ROUTE_HEALTH_FAILURE_STATUS_CODES=500,502,503,504
 ```
 
 只有在响应头尚未发送给客户端时才允许 retry 或 fallback。流开始后不会跨供应商拼接响应。数据库路由按 `priority` 依次尝试所有启用 route，并将每次供应商调用独立写入 attempt 账本。
+
+启用健康感知后，连接错误、超时和配置的状态码会累计 route 失败次数。达到阈值后该 route 在恢复窗口内被跳过；窗口结束时仅放行一个半开探测请求，成功后恢复流量，失败则重新进入恢复窗口。健康状态存储在 Redis，Redis 不可用时网关拒绝继续执行受健康策略保护的 route。
 
 直接调用示例：
 

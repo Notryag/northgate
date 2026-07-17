@@ -93,6 +93,11 @@ class Route(TimestampMixin, Base):
     retry_status_codes: Mapped[list[int]] = mapped_column(
         JSON, default=lambda: [429, 500, 502, 503, 504]
     )
+    health_failure_threshold: Mapped[int] = mapped_column(Integer, default=0)
+    health_recovery_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    health_failure_status_codes: Mapped[list[int]] = mapped_column(
+        JSON, default=lambda: [500, 502, 503, 504]
+    )
 
     provider_credential: Mapped[ProviderCredential] = relationship(lazy="joined")
 

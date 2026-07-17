@@ -18,6 +18,7 @@ from northgate.middleware import RequestContextMiddleware
 from northgate.policy import PolicyEngine
 from northgate.pricing import PricingRepository
 from northgate.proxy import proxy_chat_completions
+from northgate.route_health import RouteHealthEngine
 from northgate.routing import DatabaseRouteResolver
 from northgate.usage import UsageRecorder
 
@@ -47,10 +48,12 @@ def create_app(
             settings.monthly_spend_limit_microusd,
         )
     )
-    policy_possible = settings.routing_source == "database" or configured_policy
+    redis_required = (
+        settings.routing_source == "database" or configured_policy or settings.route_health_enabled
+    )
     active_redis = redis
     owns_redis = False
-    if policy_possible and active_redis is None:
+    if redis_required and active_redis is None:
         active_redis = Redis.from_url(settings.redis_url.get_secret_value())
         owns_redis = True
 
@@ -101,6 +104,9 @@ def create_app(
     app.state.console_directory = settings.console_directory
     app.state.database = active_database
     app.state.route_resolver = route_resolver
+    app.state.route_health_engine = (
+        RouteHealthEngine(active_redis) if active_redis is not None else None
+    )
     app.state.policy_engine = (
         PolicyEngine(active_redis, lease_seconds=settings.concurrency_lease_seconds)
         if active_redis is not None

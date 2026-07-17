@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     fallback_provider_base_url: str | None = None
     fallback_provider_api_key: SecretStr | None = None
     fallback_provider_max_retries: int = Field(default=0, ge=0, le=5)
+    route_health_enabled: bool = False
+    route_health_failure_threshold: int = Field(default=3, ge=1, le=100)
+    route_health_recovery_seconds: int = Field(default=30, ge=1, le=3600)
+    route_health_failure_status_codes: str = "500,502,503,504"
     credential_encryption_key: SecretStr | None = None
     operator_key_sha256: SecretStr | None = None
     console_directory: Path = Path("apps/console/dist")

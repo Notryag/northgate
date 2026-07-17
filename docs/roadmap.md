@@ -96,6 +96,7 @@ Implemented so far:
 - Bounded per-route retries and fallback on configured status codes or transport failures.
 - Durable provider-attempt records for status, latency, usage, cost, and ambiguous outcomes.
 - Operator API for inspecting every attempt behind a Northgate request ID.
+- Redis-backed route circuit breakers with single-request half-open probes and explicit recovery windows.
 
 Deliverables:
 

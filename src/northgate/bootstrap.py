@@ -126,6 +126,17 @@ async def bootstrap(settings: Settings) -> None:
                             for code in settings.provider_retry_status_codes.split(",")
                             if code.strip()
                         ],
+                        health_failure_threshold=(
+                            settings.route_health_failure_threshold
+                            if settings.route_health_enabled
+                            else 0
+                        ),
+                        health_recovery_seconds=settings.route_health_recovery_seconds,
+                        health_failure_status_codes=[
+                            int(code.strip())
+                            for code in settings.route_health_failure_status_codes.split(",")
+                            if code.strip()
+                        ],
                     )
                 )
             else:
@@ -135,6 +146,15 @@ async def bootstrap(settings: Settings) -> None:
                 route.retry_status_codes = [
                     int(code.strip())
                     for code in settings.provider_retry_status_codes.split(",")
+                    if code.strip()
+                ]
+                route.health_failure_threshold = (
+                    settings.route_health_failure_threshold if settings.route_health_enabled else 0
+                )
+                route.health_recovery_seconds = settings.route_health_recovery_seconds
+                route.health_failure_status_codes = [
+                    int(code.strip())
+                    for code in settings.route_health_failure_status_codes.split(",")
                     if code.strip()
                 ]
 
@@ -186,6 +206,17 @@ async def bootstrap(settings: Settings) -> None:
                             enabled=True,
                             max_retries=settings.fallback_provider_max_retries,
                             retry_status_codes=retry_status_codes,
+                            health_failure_threshold=(
+                                settings.route_health_failure_threshold
+                                if settings.route_health_enabled
+                                else 0
+                            ),
+                            health_recovery_seconds=settings.route_health_recovery_seconds,
+                            health_failure_status_codes=[
+                                int(code.strip())
+                                for code in settings.route_health_failure_status_codes.split(",")
+                                if code.strip()
+                            ],
                         )
                     )
                 else:
@@ -194,6 +225,17 @@ async def bootstrap(settings: Settings) -> None:
                     fallback_route.enabled = True
                     fallback_route.max_retries = settings.fallback_provider_max_retries
                     fallback_route.retry_status_codes = retry_status_codes
+                    fallback_route.health_failure_threshold = (
+                        settings.route_health_failure_threshold
+                        if settings.route_health_enabled
+                        else 0
+                    )
+                    fallback_route.health_recovery_seconds = settings.route_health_recovery_seconds
+                    fallback_route.health_failure_status_codes = [
+                        int(code.strip())
+                        for code in settings.route_health_failure_status_codes.split(",")
+                        if code.strip()
+                    ]
 
             policy = await session.scalar(
                 select(GatewayPolicy).where(GatewayPolicy.gateway_id == gateway.id)
