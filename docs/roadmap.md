@@ -88,7 +88,14 @@ Exit criteria:
 
 ## M3: Routing and reliability
 
-Status: next
+Status: in progress
+
+Implemented so far:
+
+- Multiple ordered OpenAI-compatible routes per gateway.
+- Bounded per-route retries and fallback on configured status codes or transport failures.
+- Durable provider-attempt records for status, latency, usage, cost, and ambiguous outcomes.
+- Operator API for inspecting every attempt behind a Northgate request ID.
 
 Deliverables:
 

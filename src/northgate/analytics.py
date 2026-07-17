@@ -10,7 +10,7 @@ from sqlalchemy import case, func, select
 
 from northgate.config import Settings
 from northgate.db.database import Database
-from northgate.db.models import RequestRecord
+from northgate.db.models import ProviderAttemptRecord, RequestRecord
 
 _MAX_RANGE = timedelta(days=90)
 
@@ -176,6 +176,55 @@ async def usage_timeseries(
                     else None,
                 }
                 for row in rows
+            ],
+        }
+    )
+
+
+async def usage_attempts(request: Request, request_id: str) -> Response:
+    authorization_error = _authorize(request)
+    if authorization_error is not None:
+        return authorization_error
+    database = _database(request)
+    if database is None:
+        return JSONResponse(
+            {"error": {"code": "ANALYTICS_UNAVAILABLE", "message": "Analytics unavailable"}},
+            status_code=503,
+        )
+    statement = (
+        select(ProviderAttemptRecord)
+        .where(ProviderAttemptRecord.request_id == request_id)
+        .order_by(ProviderAttemptRecord.attempt_index)
+    )
+    async with database.sessions() as session:
+        attempts = (await session.scalars(statement)).all()
+    if not attempts:
+        return JSONResponse(
+            {"error": {"code": "REQUEST_NOT_FOUND", "message": "Request not found"}},
+            status_code=404,
+        )
+    return JSONResponse(
+        {
+            "request_id": request_id,
+            "attempts": [
+                {
+                    "attempt_index": attempt.attempt_index,
+                    "route_id": str(attempt.route_id) if attempt.route_id else None,
+                    "provider": attempt.provider,
+                    "outcome": attempt.outcome,
+                    "http_status": attempt.http_status,
+                    "provider_request_id": attempt.provider_request_id,
+                    "prompt_tokens": attempt.prompt_tokens,
+                    "completion_tokens": attempt.completion_tokens,
+                    "total_tokens": attempt.total_tokens,
+                    "cost_microusd": attempt.cost_microusd,
+                    "latency_ms": attempt.latency_ms,
+                    "started_at": attempt.started_at.isoformat(),
+                    "completed_at": attempt.completed_at.isoformat()
+                    if attempt.completed_at
+                    else None,
+                }
+                for attempt in attempts
             ],
         }
     )

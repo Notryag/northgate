@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     provider_read_timeout_seconds: float = Field(default=300.0, gt=0)
     provider_write_timeout_seconds: float = Field(default=30.0, gt=0)
     provider_pool_timeout_seconds: float = Field(default=10.0, gt=0)
+    provider_max_retries: int = Field(default=0, ge=0, le=5)
+    provider_retry_status_codes: str = "429,500,502,503,504"
+    provider_retry_backoff_ms: int = Field(default=100, ge=0, le=5000)
+    fallback_provider_name: str | None = None
+    fallback_provider_base_url: str | None = None
+    fallback_provider_api_key: SecretStr | None = None
+    fallback_provider_max_retries: int = Field(default=0, ge=0, le=5)
     credential_encryption_key: SecretStr | None = None
     operator_key_sha256: SecretStr | None = None
     console_directory: Path = Path("apps/console/dist")

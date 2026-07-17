@@ -9,7 +9,7 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from northgate.db.database import Database
-from northgate.db.models import RequestRecord
+from northgate.db.models import ProviderAttemptRecord, RequestRecord
 from northgate.routing import ResolvedRoute
 
 logger = structlog.get_logger()
@@ -125,6 +125,8 @@ class UsageRecorder:
         first_token_ms: int | None,
         usage: UsageResult,
         cost_microusd: int | None,
+        final_route: ResolvedRoute,
+        price_id: UUID | None,
     ) -> None:
         async with self.database.sessions() as session:
             await session.execute(
@@ -141,8 +143,64 @@ class UsageRecorder:
                     completion_tokens=usage.completion_tokens,
                     total_tokens=usage.total_tokens,
                     cost_microusd=cost_microusd,
+                    route_id=final_route.route_id,
+                    provider=final_route.provider,
+                    price_id=price_id,
                     latency_ms=latency_ms,
                     first_token_ms=first_token_ms,
+                    completed_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
+    async def start_attempt(
+        self,
+        *,
+        request_id: str,
+        attempt_index: int,
+        route: ResolvedRoute,
+        price_id: UUID | None,
+    ) -> UUID:
+        async with self.database.sessions() as session:
+            attempt = ProviderAttemptRecord(
+                request_id=request_id,
+                attempt_index=attempt_index,
+                route_id=route.route_id,
+                provider=route.provider,
+                price_id=price_id,
+                outcome="started",
+            )
+            session.add(attempt)
+            await session.commit()
+            return attempt.id
+
+    async def settle_attempt(
+        self,
+        *,
+        attempt_id: UUID,
+        outcome: str,
+        status_code: int | None,
+        provider_request_id: str | None,
+        latency_ms: int,
+        usage: UsageResult,
+        cost_microusd: int | None,
+    ) -> None:
+        async with self.database.sessions() as session:
+            await session.execute(
+                update(ProviderAttemptRecord)
+                .where(
+                    ProviderAttemptRecord.id == attempt_id,
+                    ProviderAttemptRecord.outcome == "started",
+                )
+                .values(
+                    outcome=outcome,
+                    http_status=status_code,
+                    provider_request_id=provider_request_id,
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    total_tokens=usage.total_tokens,
+                    cost_microusd=cost_microusd,
+                    latency_ms=latency_ms,
                     completed_at=datetime.now(UTC),
                 )
             )

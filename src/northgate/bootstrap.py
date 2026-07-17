@@ -120,11 +120,80 @@ async def bootstrap(settings: Settings) -> None:
                         name="default-openai",
                         priority=0,
                         enabled=True,
+                        max_retries=settings.provider_max_retries,
+                        retry_status_codes=[
+                            int(code.strip())
+                            for code in settings.provider_retry_status_codes.split(",")
+                            if code.strip()
+                        ],
                     )
                 )
             else:
                 route.provider_credential_id = provider_credential.id
                 route.enabled = True
+                route.max_retries = settings.provider_max_retries
+                route.retry_status_codes = [
+                    int(code.strip())
+                    for code in settings.provider_retry_status_codes.split(",")
+                    if code.strip()
+                ]
+
+            fallback_key = settings.fallback_provider_api_key
+            if (
+                settings.fallback_provider_name
+                and settings.fallback_provider_base_url
+                and fallback_key is not None
+                and fallback_key.get_secret_value()
+            ):
+                fallback_name = f"fallback-{settings.fallback_provider_name}"
+                fallback_credential = await session.scalar(
+                    select(ProviderCredential).where(
+                        ProviderCredential.project_id == project.id,
+                        ProviderCredential.name == fallback_name,
+                    )
+                )
+                encrypted_fallback_key = cipher.encrypt(fallback_key.get_secret_value())
+                if fallback_credential is None:
+                    fallback_credential = ProviderCredential(
+                        project_id=project.id,
+                        name=fallback_name,
+                        provider=settings.fallback_provider_name,
+                        base_url=settings.fallback_provider_base_url,
+                        encrypted_api_key=encrypted_fallback_key,
+                    )
+                    session.add(fallback_credential)
+                    await session.flush()
+                else:
+                    fallback_credential.provider = settings.fallback_provider_name
+                    fallback_credential.base_url = settings.fallback_provider_base_url
+                    fallback_credential.encrypted_api_key = encrypted_fallback_key
+
+                fallback_route = await session.scalar(
+                    select(Route).where(Route.gateway_id == gateway.id, Route.priority == 1)
+                )
+                retry_status_codes = [
+                    int(code.strip())
+                    for code in settings.provider_retry_status_codes.split(",")
+                    if code.strip()
+                ]
+                if fallback_route is None:
+                    session.add(
+                        Route(
+                            gateway_id=gateway.id,
+                            provider_credential_id=fallback_credential.id,
+                            name=fallback_name,
+                            priority=1,
+                            enabled=True,
+                            max_retries=settings.fallback_provider_max_retries,
+                            retry_status_codes=retry_status_codes,
+                        )
+                    )
+                else:
+                    fallback_route.provider_credential_id = fallback_credential.id
+                    fallback_route.name = fallback_name
+                    fallback_route.enabled = True
+                    fallback_route.max_retries = settings.fallback_provider_max_retries
+                    fallback_route.retry_status_codes = retry_status_codes
 
             policy = await session.scalar(
                 select(GatewayPolicy).where(GatewayPolicy.gateway_id == gateway.id)

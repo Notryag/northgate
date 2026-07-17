@@ -131,6 +131,10 @@ Operator usage APIs are implemented at `/api/v1/usage/summary` and
 maximum 90-day range with optional project and gateway filters. Application
 keys are not control-plane credentials.
 
+`/api/v1/usage/requests/{request_id}/attempts` exposes the ordered provider
+attempt ledger to operators. Retry and fallback happen only before downstream
+response headers are sent; mid-stream failures terminate the stream.
+
 ## Proposed control-plane resources
 
 ```text

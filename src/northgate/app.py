@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
 
 from northgate import __version__
-from northgate.analytics import usage_summary, usage_timeseries
+from northgate.analytics import usage_attempts, usage_summary, usage_timeseries
 from northgate.config import Settings, get_settings
 from northgate.console import console_index
 from northgate.credentials import CredentialCipher
@@ -140,6 +140,11 @@ def create_app(
     )
     app.add_api_route("/api/v1/usage/summary", usage_summary, methods=["GET"])
     app.add_api_route("/api/v1/usage/timeseries", usage_timeseries, methods=["GET"])
+    app.add_api_route(
+        "/api/v1/usage/requests/{request_id}/attempts",
+        usage_attempts,
+        methods=["GET"],
+    )
     app.mount(
         "/console/assets",
         StaticFiles(directory=settings.console_directory / "assets", check_dir=False),

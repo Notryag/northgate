@@ -3,9 +3,11 @@ import json
 import math
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from hmac import compare_digest
+from uuid import UUID
 
 import httpx
 import structlog
@@ -26,7 +28,7 @@ from northgate.routing import (
     InvalidApplicationKeyError,
     ResolvedRoute,
     RouteUnavailableError,
-    configured_route,
+    configured_routes,
 )
 from northgate.usage import (
     DuplicateRequestError,
@@ -103,6 +105,7 @@ def _downstream_headers(
     response: httpx.Response,
     route: ResolvedRoute,
     policy_headers: dict[str, str],
+    attempt_count: int,
 ) -> dict[str, str]:
     headers = {
         name: value
@@ -112,6 +115,7 @@ def _downstream_headers(
     }
     headers["Northgate-Provider"] = route.provider
     headers["Northgate-Route"] = str(route.route_id or "configured-openai")
+    headers["Northgate-Attempts"] = str(attempt_count)
     headers.update(policy_headers)
     return headers
 
@@ -127,6 +131,8 @@ async def _settle_safely(
     usage: UsageResult,
     cost_microusd: int | None,
     first_token_ms: int | None,
+    final_route: ResolvedRoute,
+    price_id: UUID | None,
 ) -> None:
     try:
         await recorder.settle(
@@ -138,9 +144,92 @@ async def _settle_safely(
             first_token_ms=first_token_ms,
             usage=usage,
             cost_microusd=cost_microusd,
+            final_route=final_route,
+            price_id=price_id,
         )
     except Exception:
         await logger.aexception("usage_settlement_failed", northgate_request_id=request_id)
+
+
+@dataclass
+class AttemptTotals:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_microusd: int = 0
+    has_usage: bool = False
+    has_cost: bool = False
+    ambiguous: bool = False
+
+    def add(self, usage: UsageResult, cost_microusd: int | None) -> None:
+        if usage.total_tokens is not None:
+            self.prompt_tokens += usage.prompt_tokens or 0
+            self.completion_tokens += usage.completion_tokens or 0
+            self.total_tokens += usage.total_tokens
+            self.has_usage = True
+        if cost_microusd is not None:
+            self.cost_microusd += cost_microusd
+            self.has_cost = True
+
+    def usage(self) -> UsageResult:
+        if not self.has_usage:
+            return UsageResult()
+        return UsageResult(
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            total_tokens=self.total_tokens,
+        )
+
+
+async def _settle_attempt_safely(
+    recorder: UsageRecorder | None,
+    *,
+    attempt_id: UUID | None,
+    outcome: str,
+    status_code: int | None,
+    provider_request_id: str | None,
+    started_at: float,
+    usage: UsageResult,
+    cost_microusd: int | None,
+) -> None:
+    if recorder is None or attempt_id is None:
+        return
+    try:
+        await recorder.settle_attempt(
+            attempt_id=attempt_id,
+            outcome=outcome,
+            status_code=status_code,
+            provider_request_id=provider_request_id,
+            latency_ms=round((time.perf_counter() - started_at) * 1000),
+            usage=usage,
+            cost_microusd=cost_microusd,
+        )
+    except Exception:
+        await logger.aexception("provider_attempt_settlement_failed", attempt_id=str(attempt_id))
+
+
+async def _consume_retryable_response(
+    response: httpx.Response,
+    *,
+    started_at: float,
+    price: PriceQuote | None,
+) -> tuple[UsageResult, int | None]:
+    accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
+    try:
+        if response.is_stream_consumed:
+            accumulator.observe(response.content)
+        else:
+            async for chunk in response.aiter_raw():
+                accumulator.observe(chunk)
+    finally:
+        await response.aclose()
+    usage = accumulator.result()
+    cost_microusd = (
+        price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
+        if price is not None
+        else None
+    )
+    return usage, cost_microusd
 
 
 async def _response_body(
@@ -152,6 +241,10 @@ async def _response_body(
     policy_engine: PolicyEngine | None,
     policy_lease: PolicyLease | None,
     price: PriceQuote | None,
+    route: ResolvedRoute,
+    attempt_id: UUID | None,
+    attempt_started_at: float,
+    totals: AttemptTotals,
 ) -> AsyncIterator[bytes]:
     accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
     outcome = "succeeded" if response.status_code < 400 else "provider_error"
@@ -165,9 +258,11 @@ async def _response_body(
             yield chunk
     except asyncio.CancelledError:
         outcome = "client_disconnected"
+        totals.ambiguous = True
         raise
     except httpx.TransportError:
         outcome = "provider_error"
+        totals.ambiguous = True
         raise
     finally:
         await response.aclose()
@@ -177,6 +272,19 @@ async def _response_body(
             if price is not None
             else None
         )
+        totals.add(usage, cost_microusd)
+        await _settle_attempt_safely(
+            recorder,
+            attempt_id=attempt_id,
+            outcome=outcome,
+            status_code=response.status_code,
+            provider_request_id=response.headers.get("x-request-id"),
+            started_at=attempt_started_at,
+            usage=usage,
+            cost_microusd=cost_microusd,
+        )
+        aggregate_usage = totals.usage()
+        aggregate_cost = totals.cost_microusd if totals.has_cost else None
         if recorder is not None:
             settlement = asyncio.create_task(
                 _settle_safely(
@@ -186,9 +294,11 @@ async def _response_body(
                     status_code=response.status_code,
                     provider_request_id=response.headers.get("x-request-id"),
                     started_at=started_at,
-                    usage=usage,
-                    cost_microusd=cost_microusd,
+                    usage=aggregate_usage,
+                    cost_microusd=aggregate_cost,
                     first_token_ms=accumulator.first_token_ms,
+                    final_route=route,
+                    price_id=price.price_id if price is not None else None,
                 )
             )
             try:
@@ -197,7 +307,11 @@ async def _response_body(
                 pass
         if policy_engine is not None and policy_lease is not None:
             settlement = asyncio.create_task(
-                policy_engine.settle(policy_lease, usage.total_tokens, cost_microusd)
+                policy_engine.settle(
+                    policy_lease,
+                    None if totals.ambiguous else aggregate_usage.total_tokens,
+                    None if totals.ambiguous else aggregate_cost,
+                )
             )
             try:
                 await asyncio.shield(settlement)
@@ -257,11 +371,11 @@ def _estimated_tokens(body: bytes, settings: Settings) -> tuple[int, int]:
     return prompt_estimate, output_estimate
 
 
-async def _resolve_route(
+async def _resolve_routes(
     request: Request,
     gateway_slug: str,
     settings: Settings,
-) -> ResolvedRoute:
+) -> list[ResolvedRoute]:
     credential = _bearer_credential(request)
     if credential is None:
         raise InvalidApplicationKeyError
@@ -274,7 +388,7 @@ async def _resolve_route(
         raise InvalidApplicationKeyError
     if gateway_slug != settings.gateway_slug:
         raise ForbiddenGatewayError
-    return configured_route(settings)
+    return configured_routes(settings)
 
 
 async def proxy_chat_completions(
@@ -286,7 +400,7 @@ async def proxy_chat_completions(
     request_id: str = request.state.request_id
 
     try:
-        route = await _resolve_route(request, gateway_slug, settings)
+        routes = await _resolve_routes(request, gateway_slug, settings)
     except InvalidApplicationKeyError:
         return _error(
             request,
@@ -315,6 +429,7 @@ async def proxy_chat_completions(
             retryable=True,
         )
 
+    route = routes[0]
     request_metadata = _request_metadata(request, route)
     if request_metadata is None:
         return _error(
@@ -329,14 +444,17 @@ async def proxy_chat_completions(
     model = _request_model(body)
     pricing_repository: PricingRepository | None = request.app.state.pricing_repository
     if settings.routing_source == "database" and pricing_repository is not None and model:
-        price = await pricing_repository.resolve(route.provider, model, datetime.now(UTC))
+        prices = [
+            await pricing_repository.resolve(candidate.provider, model, datetime.now(UTC))
+            for candidate in routes
+        ]
     else:
-        price = configured_price(settings)
+        prices = [configured_price(settings) for _ in routes]
     spend_limited = (
         route.policy.daily_spend_microusd is not None
         or route.policy.monthly_spend_microusd is not None
     )
-    if spend_limited and price is None:
+    if spend_limited and any(price is None for price in prices):
         return _error(
             request,
             status_code=503,
@@ -346,8 +464,11 @@ async def proxy_chat_completions(
         )
 
     estimated_input_tokens, estimated_output_tokens = _estimated_tokens(body, settings)
-    estimated_cost_microusd = (
-        price.cost(estimated_input_tokens, estimated_output_tokens) if price is not None else 0
+    possible_attempts = sum(candidate.max_retries + 1 for candidate in routes)
+    estimated_cost_microusd = sum(
+        (price.cost(estimated_input_tokens, estimated_output_tokens) if price is not None else 0)
+        * (candidate.max_retries + 1)
+        for candidate, price in zip(routes, prices, strict=True)
     )
     policy_engine: PolicyEngine | None = request.app.state.policy_engine
     policy_lease: PolicyLease | None = None
@@ -365,7 +486,8 @@ async def proxy_chat_completions(
                 gateway_key=str(route.gateway_id or gateway_slug),
                 request_id=request_id,
                 limits=route.policy,
-                estimated_tokens=estimated_input_tokens + estimated_output_tokens,
+                estimated_tokens=(estimated_input_tokens + estimated_output_tokens)
+                * possible_attempts,
                 estimated_cost_microusd=estimated_cost_microusd,
             )
         except PolicyRejectedError as exc:
@@ -387,6 +509,7 @@ async def proxy_chat_completions(
             )
 
     recorder: UsageRecorder | None = request.app.state.usage_recorder
+    price = prices[0]
     if recorder is not None:
         try:
             await recorder.start(
@@ -418,76 +541,189 @@ async def proxy_chat_completions(
                 retryable=True,
             )
 
+    attempt_plan = [
+        (candidate, candidate_price)
+        for candidate, candidate_price in zip(routes, prices, strict=True)
+        for _ in range(candidate.max_retries + 1)
+    ]
+    totals = AttemptTotals()
     client: httpx.AsyncClient = request.app.state.upstream_client
-    upstream_url = f"{route.base_url.rstrip('/')}/chat/completions"
-    upstream_request = client.build_request(
-        "POST",
-        upstream_url,
-        headers=_upstream_headers(request, route.api_key),
-        content=body,
+    last_route = route
+    last_price = price
+    last_failure = "provider_unavailable"
+
+    for plan_index, (candidate, candidate_price) in enumerate(attempt_plan):
+        attempt_index = plan_index + 1
+        has_next = attempt_index < len(attempt_plan)
+        attempt_started_at = time.perf_counter()
+        attempt_id: UUID | None = None
+        if recorder is not None:
+            try:
+                attempt_id = await recorder.start_attempt(
+                    request_id=request_id,
+                    attempt_index=attempt_index,
+                    route=candidate,
+                    price_id=candidate_price.price_id if candidate_price is not None else None,
+                )
+            except Exception:
+                await logger.aexception(
+                    "provider_attempt_start_failed",
+                    northgate_request_id=request_id,
+                    attempt_index=attempt_index,
+                )
+                await _settle_safely(
+                    recorder,
+                    request_id=request_id,
+                    outcome="internal_failure",
+                    status_code=503,
+                    provider_request_id=None,
+                    started_at=started_at,
+                    usage=totals.usage(),
+                    cost_microusd=totals.cost_microusd if totals.has_cost else None,
+                    first_token_ms=None,
+                    final_route=candidate,
+                    price_id=candidate_price.price_id if candidate_price is not None else None,
+                )
+                if policy_engine is not None and policy_lease is not None:
+                    await policy_engine.settle(policy_lease, 0, 0)
+                return _error(
+                    request,
+                    status_code=503,
+                    code="INTERNAL_FAILURE",
+                    message="Attempt accounting is unavailable",
+                    retryable=True,
+                )
+
+        upstream_request = client.build_request(
+            "POST",
+            f"{candidate.base_url.rstrip('/')}/chat/completions",
+            headers=_upstream_headers(request, candidate.api_key),
+            content=body,
+        )
+        try:
+            response = await client.send(upstream_request, stream=True)
+        except httpx.TimeoutException:
+            totals.ambiguous = True
+            last_failure = "provider_timeout"
+            await _settle_attempt_safely(
+                recorder,
+                attempt_id=attempt_id,
+                outcome="timeout_ambiguous",
+                status_code=None,
+                provider_request_id=None,
+                started_at=attempt_started_at,
+                usage=UsageResult(),
+                cost_microusd=None,
+            )
+        except httpx.TransportError as exc:
+            is_connection_failure = isinstance(exc, httpx.ConnectError)
+            if not is_connection_failure:
+                totals.ambiguous = True
+            last_failure = "provider_unavailable"
+            await _settle_attempt_safely(
+                recorder,
+                attempt_id=attempt_id,
+                outcome="connection_error" if is_connection_failure else "transport_ambiguous",
+                status_code=None,
+                provider_request_id=None,
+                started_at=attempt_started_at,
+                usage=UsageResult(),
+                cost_microusd=None,
+            )
+        else:
+            if response.status_code in candidate.retry_status_codes and has_next:
+                try:
+                    retry_usage, retry_cost = await _consume_retryable_response(
+                        response,
+                        started_at=attempt_started_at,
+                        price=candidate_price,
+                    )
+                except httpx.TransportError:
+                    totals.ambiguous = True
+                    await _settle_attempt_safely(
+                        recorder,
+                        attempt_id=attempt_id,
+                        outcome="transport_ambiguous",
+                        status_code=response.status_code,
+                        provider_request_id=response.headers.get("x-request-id"),
+                        started_at=attempt_started_at,
+                        usage=UsageResult(),
+                        cost_microusd=None,
+                    )
+                else:
+                    totals.add(retry_usage, retry_cost)
+                    await _settle_attempt_safely(
+                        recorder,
+                        attempt_id=attempt_id,
+                        outcome="retryable_status",
+                        status_code=response.status_code,
+                        provider_request_id=response.headers.get("x-request-id"),
+                        started_at=attempt_started_at,
+                        usage=retry_usage,
+                        cost_microusd=retry_cost,
+                    )
+            else:
+                return StreamingResponse(
+                    _response_body(
+                        response,
+                        recorder=recorder,
+                        request_id=request_id,
+                        started_at=started_at,
+                        policy_engine=policy_engine,
+                        policy_lease=policy_lease,
+                        price=candidate_price,
+                        route=candidate,
+                        attempt_id=attempt_id,
+                        attempt_started_at=attempt_started_at,
+                        totals=totals,
+                    ),
+                    status_code=response.status_code,
+                    headers=_downstream_headers(
+                        response,
+                        candidate,
+                        policy_lease.headers if policy_lease is not None else {},
+                        attempt_index,
+                    ),
+                )
+
+        last_route = candidate
+        last_price = candidate_price
+        if has_next and settings.provider_retry_backoff_ms:
+            backoff_ms = min(
+                5000,
+                settings.provider_retry_backoff_ms * (2 ** min(plan_index, 4)),
+            )
+            await asyncio.sleep(backoff_ms / 1000)
+
+    status_code = 504 if last_failure == "provider_timeout" else 502
+    error_code = (
+        "PROVIDER_TIMEOUT" if last_failure == "provider_timeout" else "PROVIDER_UNAVAILABLE"
     )
-
-    try:
-        response = await client.send(upstream_request, stream=True)
-    except httpx.TimeoutException:
-        if recorder is not None:
-            await _settle_safely(
-                recorder,
-                request_id=request_id,
-                outcome="provider_timeout",
-                status_code=504,
-                provider_request_id=None,
-                started_at=started_at,
-                usage=UsageResult(),
-                cost_microusd=None,
-                first_token_ms=None,
-            )
-        if policy_engine is not None and policy_lease is not None:
-            await policy_engine.settle(policy_lease, None)
-        return _error(
-            request,
-            status_code=504,
-            code="PROVIDER_TIMEOUT",
-            message="Provider timed out",
-            retryable=True,
-        )
-    except httpx.TransportError:
-        if recorder is not None:
-            await _settle_safely(
-                recorder,
-                request_id=request_id,
-                outcome="provider_unavailable",
-                status_code=502,
-                provider_request_id=None,
-                started_at=started_at,
-                usage=UsageResult(),
-                cost_microusd=None,
-                first_token_ms=None,
-            )
-        if policy_engine is not None and policy_lease is not None:
-            await policy_engine.settle(policy_lease, None)
-        return _error(
-            request,
-            status_code=502,
-            code="PROVIDER_UNAVAILABLE",
-            message="Provider is unavailable",
-            retryable=True,
-        )
-
-    return StreamingResponse(
-        _response_body(
-            response,
-            recorder=recorder,
+    if recorder is not None:
+        await _settle_safely(
+            recorder,
             request_id=request_id,
+            outcome=last_failure,
+            status_code=status_code,
+            provider_request_id=None,
             started_at=started_at,
-            policy_engine=policy_engine,
-            policy_lease=policy_lease,
-            price=price,
-        ),
-        status_code=response.status_code,
-        headers=_downstream_headers(
-            response,
-            route,
-            policy_lease.headers if policy_lease is not None else {},
-        ),
+            usage=totals.usage(),
+            cost_microusd=totals.cost_microusd if totals.has_cost else None,
+            first_token_ms=None,
+            final_route=last_route,
+            price_id=last_price.price_id if last_price is not None else None,
+        )
+    if policy_engine is not None and policy_lease is not None:
+        await policy_engine.settle(
+            policy_lease,
+            None if totals.ambiguous else totals.usage().total_tokens,
+            None if totals.ambiguous else totals.cost_microusd if totals.has_cost else None,
+        )
+    return _error(
+        request,
+        status_code=status_code,
+        code=error_code,
+        message="Provider timed out" if status_code == 504 else "Provider is unavailable",
+        retryable=True,
+        headers=policy_lease.headers if policy_lease is not None else None,
     )

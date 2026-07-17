@@ -89,6 +89,10 @@ class Route(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200))
     priority: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(default=True)
+    max_retries: Mapped[int] = mapped_column(Integer, default=0)
+    retry_status_codes: Mapped[list[int]] = mapped_column(
+        JSON, default=lambda: [429, 500, 502, 503, 504]
+    )
 
     provider_credential: Mapped[ProviderCredential] = relationship(lazy="joined")
 
@@ -145,6 +149,34 @@ class RequestRecord(Base):
     total_tokens: Mapped[int | None] = mapped_column(Integer)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     first_token_ms: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ProviderAttemptRecord(Base):
+    __tablename__ = "provider_attempt_records"
+    __table_args__ = (UniqueConstraint("request_id", "attempt_index"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    request_id: Mapped[str] = mapped_column(
+        ForeignKey("request_records.request_id", ondelete="CASCADE"), index=True
+    )
+    attempt_index: Mapped[int] = mapped_column(Integer)
+    route_id: Mapped[UUID | None] = mapped_column(ForeignKey("routes.id", ondelete="SET NULL"))
+    provider: Mapped[str] = mapped_column(String(40))
+    price_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_prices.id", ondelete="SET NULL")
+    )
+    outcome: Mapped[str] = mapped_column(String(40), default="started")
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    provider_request_id: Mapped[str | None] = mapped_column(String(200))
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

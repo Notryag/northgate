@@ -146,6 +146,71 @@ async def test_provider_timeout_has_stable_error() -> None:
     assert response.json()["error"]["retryable"] is True
 
 
+@pytest.mark.anyio
+async def test_retryable_status_falls_back_to_next_provider() -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.host, request.headers["authorization"]))
+        await request.aread()
+        if request.url.host == "provider.test":
+            return httpx.Response(503, json={"error": "primary unavailable"})
+        return httpx.Response(200, json={"id": "fallback-success"})
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(
+            provider_retry_backoff_ms=0,
+            fallback_provider_name="backup",
+            fallback_provider_base_url="https://fallback.test/v1",
+            fallback_provider_api_key=SecretStr("fallback-secret"),
+        ),
+        upstream_client=upstream_client,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH, json={"model": "gpt-test"}, headers=_authorization()
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "fallback-success"}
+    assert response.headers["Northgate-Provider"] == "backup"
+    assert response.headers["Northgate-Attempts"] == "2"
+    assert calls == [
+        ("provider.test", f"Bearer {PROVIDER_KEY}"),
+        ("fallback.test", "Bearer fallback-secret"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_route_retry_is_bounded_before_fallback() -> None:
+    call_count = 0
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        await request.aread()
+        if call_count == 1:
+            return httpx.Response(503, json={"error": "retry"})
+        return httpx.Response(200, json={"id": "retry-success"})
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(provider_max_retries=1, provider_retry_backoff_ms=0),
+        upstream_client=upstream_client,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH, json={"model": "gpt-test"}, headers=_authorization()
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.headers["Northgate-Attempts"] == "2"
+    assert call_count == 2
+
+
 class GatedStream(httpx.AsyncByteStream):
     def __init__(self, release_second_chunk: asyncio.Event) -> None:
         self.release_second_chunk = release_second_chunk

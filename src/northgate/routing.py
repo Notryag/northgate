@@ -54,6 +54,8 @@ class ResolvedRoute:
     api_key: str
     allowed_metadata_keys: frozenset[str]
     policy: PolicyLimits
+    max_retries: int = 0
+    retry_status_codes: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 
 
 class DatabaseRouteResolver:
@@ -61,7 +63,7 @@ class DatabaseRouteResolver:
         self.database = database
         self.cipher = cipher
 
-    async def resolve(self, application_key: str, gateway_slug: str) -> ResolvedRoute:
+    async def resolve(self, application_key: str, gateway_slug: str) -> list[ResolvedRoute]:
         digest = sha256(application_key.encode()).hexdigest()
         async with self.database.sessions() as session:
             application = await session.scalar(
@@ -90,36 +92,41 @@ class DatabaseRouteResolver:
                 )
                 .where(Route.gateway_id == gateway.id, Route.enabled.is_(True))
                 .order_by(Route.priority)
-                .limit(1)
             )
-            row = result.one_or_none()
-            if row is None:
+            rows = result.all()
+            if not rows:
                 raise RouteUnavailableError
-            route, credential = row
             policy = await session.scalar(
                 select(GatewayPolicy).where(GatewayPolicy.gateway_id == gateway.id)
             )
 
-        try:
-            api_key = self.cipher.decrypt(credential.encrypted_api_key)
-        except ValueError as exc:
-            raise RouteUnavailableError from exc
-        return ResolvedRoute(
-            project_id=application.project_id,
-            gateway_id=gateway.id,
-            route_id=route.id,
-            provider=credential.provider,
-            base_url=credential.base_url,
-            api_key=api_key,
-            allowed_metadata_keys=frozenset(application.allowed_metadata_keys),
-            policy=PolicyLimits(
-                requests_per_minute=policy.requests_per_minute if policy else None,
-                concurrent_requests=policy.concurrent_requests if policy else None,
-                tokens_per_day=policy.tokens_per_day if policy else None,
-                daily_spend_microusd=policy.daily_spend_microusd if policy else None,
-                monthly_spend_microusd=policy.monthly_spend_microusd if policy else None,
-            ),
-        )
+        resolved: list[ResolvedRoute] = []
+        for route, credential in rows:
+            try:
+                api_key = self.cipher.decrypt(credential.encrypted_api_key)
+            except ValueError as exc:
+                raise RouteUnavailableError from exc
+            resolved.append(
+                ResolvedRoute(
+                    project_id=application.project_id,
+                    gateway_id=gateway.id,
+                    route_id=route.id,
+                    provider=credential.provider,
+                    base_url=credential.base_url,
+                    api_key=api_key,
+                    allowed_metadata_keys=frozenset(application.allowed_metadata_keys),
+                    policy=PolicyLimits(
+                        requests_per_minute=policy.requests_per_minute if policy else None,
+                        concurrent_requests=policy.concurrent_requests if policy else None,
+                        tokens_per_day=policy.tokens_per_day if policy else None,
+                        daily_spend_microusd=policy.daily_spend_microusd if policy else None,
+                        monthly_spend_microusd=policy.monthly_spend_microusd if policy else None,
+                    ),
+                    max_retries=route.max_retries,
+                    retry_status_codes=frozenset(route.retry_status_codes),
+                )
+            )
+        return resolved
 
 
 def configured_route(settings: Settings) -> ResolvedRoute:
@@ -143,4 +150,37 @@ def configured_route(settings: Settings) -> ResolvedRoute:
             daily_spend_microusd=settings.daily_spend_limit_microusd,
             monthly_spend_microusd=settings.monthly_spend_limit_microusd,
         ),
+        max_retries=settings.provider_max_retries,
+        retry_status_codes=frozenset(
+            int(code.strip())
+            for code in settings.provider_retry_status_codes.split(",")
+            if code.strip()
+        ),
     )
+
+
+def configured_routes(settings: Settings) -> list[ResolvedRoute]:
+    primary = configured_route(settings)
+    fallback_key = settings.fallback_provider_api_key
+    if (
+        not settings.fallback_provider_name
+        or not settings.fallback_provider_base_url
+        or fallback_key is None
+        or not fallback_key.get_secret_value()
+    ):
+        return [primary]
+    return [
+        primary,
+        ResolvedRoute(
+            project_id=primary.project_id,
+            gateway_id=primary.gateway_id,
+            route_id=None,
+            provider=settings.fallback_provider_name,
+            base_url=settings.fallback_provider_base_url,
+            api_key=fallback_key.get_secret_value(),
+            allowed_metadata_keys=primary.allowed_metadata_keys,
+            policy=primary.policy,
+            max_retries=settings.fallback_provider_max_retries,
+            retry_status_codes=primary.retry_status_codes,
+        ),
+    ]
