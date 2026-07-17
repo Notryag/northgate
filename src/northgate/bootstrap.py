@@ -258,6 +258,7 @@ async def bootstrap(settings: Settings) -> None:
                 settings.token_limit_per_day,
                 settings.daily_spend_limit_microusd,
                 settings.monthly_spend_limit_microusd,
+                settings.exact_cache_ttl_seconds,
             )
             if any(limit is not None for limit in configured_limits):
                 if policy is None:
@@ -268,6 +269,7 @@ async def bootstrap(settings: Settings) -> None:
                 policy.tokens_per_day = settings.token_limit_per_day
                 policy.daily_spend_microusd = settings.daily_spend_limit_microusd
                 policy.monthly_spend_microusd = settings.monthly_spend_limit_microusd
+                policy.exact_cache_ttl_seconds = settings.exact_cache_ttl_seconds
 
             input_price = settings.input_price_microusd_per_million
             output_price = settings.output_price_microusd_per_million

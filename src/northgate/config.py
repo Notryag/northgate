@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     token_limit_per_day: int | None = Field(default=None, gt=0)
     daily_spend_limit_microusd: int | None = Field(default=None, gt=0)
     monthly_spend_limit_microusd: int | None = Field(default=None, gt=0)
+    exact_cache_ttl_seconds: int | None = Field(default=None, ge=1, le=86400)
+    cache_max_entry_bytes: int = Field(default=1048576, ge=1024, le=16777216)
     input_price_microusd_per_million: int | None = Field(default=None, ge=0)
     output_price_microusd_per_million: int | None = Field(default=None, ge=0)
     price_provider: str = "openai"

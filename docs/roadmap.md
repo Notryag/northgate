@@ -98,6 +98,7 @@ Implemented so far:
 - Operator API for inspecting every attempt behind a Northgate request ID.
 - Redis-backed route circuit breakers with single-request half-open probes and explicit recovery windows.
 - Deterministic weighted routing and exact-match metadata rules with ordered fallback.
+- Redis-backed exact request caching with bounded entries and cache-hit accounting.
 
 Deliverables:
 

@@ -1,10 +1,13 @@
 import asyncio
+import os
 from hashlib import sha256
 
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 from northgate.app import create_app
 from northgate.config import Settings
@@ -259,6 +262,105 @@ async def test_open_route_is_skipped_without_incrementing_provider_attempts() ->
     assert first.headers["Northgate-Attempts"] == "2"
     assert second.headers["Northgate-Attempts"] == "1"
     assert calls == ["provider.test", "fallback.test", "fallback.test"]
+
+
+@pytest.mark.anyio
+async def test_exact_cache_hit_avoids_a_second_provider_attempt() -> None:
+    redis = Redis.from_url(
+        os.environ.get(
+            "NORTHGATE_TEST_CACHE_REDIS_URL",
+            "redis://127.0.0.1:6379/14",
+        )
+    )
+    try:
+        await redis.ping()
+    except RedisError:
+        await redis.aclose()
+        pytest.skip("Redis is not available")
+
+    await redis.flushdb()
+    call_count = 0
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        await request.aread()
+        return httpx.Response(200, json={"id": "cached-response"})
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(exact_cache_ttl_seconds=60),
+        upstream_client=upstream_client,
+        redis=redis,
+    )
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            first = await client.post(
+                PROXY_PATH, json={"model": "gpt-test"}, headers=_authorization()
+            )
+            second = await client.post(
+                PROXY_PATH, json={"model": "gpt-test"}, headers=_authorization()
+            )
+            different_accept = await client.post(
+                PROXY_PATH,
+                json={"model": "gpt-test"},
+                headers={**_authorization(), "Accept": "text/event-stream"},
+            )
+
+        assert first.status_code == second.status_code == 200
+        assert first.headers["Northgate-Cache"] == "MISS"
+        assert second.headers["Northgate-Cache"] == "HIT"
+        assert second.headers["Northgate-Attempts"] == "0"
+        assert second.json() == {"id": "cached-response"}
+        assert different_accept.headers["Northgate-Cache"] == "MISS"
+        assert call_count == 2
+    finally:
+        await upstream_client.aclose()
+        await redis.flushdb()
+        await redis.aclose()
+
+
+@pytest.mark.anyio
+async def test_oversized_response_is_not_cached() -> None:
+    redis = Redis.from_url(
+        os.environ.get(
+            "NORTHGATE_TEST_CACHE_REDIS_URL",
+            "redis://127.0.0.1:6379/14",
+        )
+    )
+    try:
+        await redis.ping()
+    except RedisError:
+        await redis.aclose()
+        pytest.skip("Redis is not available")
+
+    await redis.flushdb()
+    call_count = 0
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        await request.aread()
+        return httpx.Response(200, content=b"x" * 1025)
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(exact_cache_ttl_seconds=60, cache_max_entry_bytes=1024),
+        upstream_client=upstream_client,
+        redis=redis,
+    )
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            first = await client.post(PROXY_PATH, json={}, headers=_authorization())
+            second = await client.post(PROXY_PATH, json={}, headers=_authorization())
+
+        assert first.headers["Northgate-Cache"] == "MISS"
+        assert second.headers["Northgate-Cache"] == "MISS"
+        assert call_count == 2
+    finally:
+        await upstream_client.aclose()
+        await redis.flushdb()
+        await redis.aclose()
 
 
 class GatedStream(httpx.AsyncByteStream):

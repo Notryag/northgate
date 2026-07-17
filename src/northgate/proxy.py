@@ -15,6 +15,12 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from northgate.config import Settings
+from northgate.exact_cache import (
+    CacheEntry,
+    CacheUnavailableError,
+    ExactCache,
+    exact_cache_key,
+)
 from northgate.policy import (
     PolicyEngine,
     PolicyLease,
@@ -53,6 +59,7 @@ _FORWARDED_RESPONSE_HEADERS = {
     "retry-after",
     "x-request-id",
 }
+_CACHED_RESPONSE_HEADERS = {"content-encoding", "content-type"}
 
 
 def _error(
@@ -108,18 +115,37 @@ def _downstream_headers(
     route: ResolvedRoute,
     policy_headers: dict[str, str],
     attempt_count: int,
+    cache_status: str | None = None,
 ) -> dict[str, str]:
-    headers = {
+    headers = _forwarded_response_headers(response)
+    headers["Northgate-Provider"] = route.provider
+    headers["Northgate-Route"] = _route_label(route)
+    headers["Northgate-Attempts"] = str(attempt_count)
+    if cache_status is not None:
+        headers["Northgate-Cache"] = cache_status
+    headers.update(policy_headers)
+    return headers
+
+
+def _forwarded_response_headers(response: httpx.Response) -> dict[str, str]:
+    return {
         name: value
         for name, value in response.headers.items()
         if name.lower() in _FORWARDED_RESPONSE_HEADERS
         or name.lower().startswith(("openai-", "x-ratelimit-"))
     }
-    headers["Northgate-Provider"] = route.provider
-    headers["Northgate-Route"] = str(route.route_id or "configured-openai")
-    headers["Northgate-Attempts"] = str(attempt_count)
-    headers.update(policy_headers)
-    return headers
+
+
+def _cached_response_headers(response: httpx.Response) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in response.headers.items()
+        if name.lower() in _CACHED_RESPONSE_HEADERS
+    }
+
+
+def _route_label(route: ResolvedRoute) -> str:
+    return str(route.route_id) if route.route_id is not None else f"configured-{route.provider}"
 
 
 async def _settle_safely(
@@ -280,18 +306,36 @@ async def _response_body(
     route_health_engine: RouteHealthEngine | None,
     route_health_key: str,
     route_health_token: str,
+    exact_cache: ExactCache | None,
+    cache_key: str | None,
+    cache_ttl_seconds: int | None,
+    cache_max_entry_bytes: int,
 ) -> AsyncIterator[bytes]:
     accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
     outcome = "succeeded" if response.status_code < 400 else "provider_error"
     transport_failed = False
+    completed = False
+    cache_body: bytearray | None = bytearray() if cache_key is not None else None
     try:
         if response.is_stream_consumed:
             accumulator.observe(response.content)
+            if cache_body is not None:
+                if len(response.content) <= cache_max_entry_bytes:
+                    cache_body.extend(response.content)
+                else:
+                    cache_body = None
             yield response.content
+            completed = True
             return
         async for chunk in response.aiter_raw():
             accumulator.observe(chunk)
+            if cache_body is not None:
+                if len(cache_body) + len(chunk) <= cache_max_entry_bytes:
+                    cache_body.extend(chunk)
+                else:
+                    cache_body = None
             yield chunk
+        completed = True
     except asyncio.CancelledError:
         outcome = "client_disconnected"
         totals.ambiguous = True
@@ -303,6 +347,30 @@ async def _response_body(
         raise
     finally:
         await response.aclose()
+        if (
+            completed
+            and 200 <= response.status_code < 300
+            and cache_body is not None
+            and exact_cache is not None
+            and cache_key is not None
+            and cache_ttl_seconds is not None
+        ):
+            try:
+                await exact_cache.set(
+                    cache_key,
+                    CacheEntry(
+                        status_code=response.status_code,
+                        headers=_cached_response_headers(response),
+                        body=bytes(cache_body),
+                        route_key=route_health_key,
+                    ),
+                    cache_ttl_seconds,
+                )
+            except CacheUnavailableError:
+                await logger.awarning(
+                    "exact_cache_write_failed",
+                    northgate_request_id=request_id,
+                )
         if outcome != "client_disconnected":
             health_failed = transport_failed or (
                 response.status_code in route.health_failure_status_codes
@@ -507,6 +575,140 @@ async def proxy_chat_completions(
 
     body = await request.body()
     model = _request_model(body)
+    policy_engine: PolicyEngine | None = request.app.state.policy_engine
+    recorder: UsageRecorder | None = request.app.state.usage_recorder
+    exact_cache: ExactCache | None = request.app.state.exact_cache
+    cache_key: str | None = None
+    cache_entry: CacheEntry | None = None
+    if route.exact_cache_ttl_seconds is not None and exact_cache is not None:
+        cache_key = exact_cache_key(
+            gateway_key=str(route.gateway_id or gateway_slug),
+            body=body,
+            metadata=request_metadata,
+            request_headers={
+                name.lower(): value
+                for name, value in request.headers.items()
+                if name.lower() in _FORWARDED_REQUEST_HEADERS
+            },
+            routes=routes,
+        )
+        try:
+            cache_entry = await exact_cache.get(cache_key)
+        except CacheUnavailableError:
+            await logger.awarning(
+                "exact_cache_read_failed",
+                northgate_request_id=request_id,
+            )
+
+    cached_route = None
+    if cache_entry is not None:
+        cached_route = next(
+            (
+                candidate
+                for candidate in routes
+                if _route_health_key(candidate) == cache_entry.route_key
+            ),
+            None,
+        )
+
+    if cache_entry is not None and cached_route is not None:
+        cache_policy_lease: PolicyLease | None = None
+        if route.policy.enabled:
+            if policy_engine is None:
+                return _error(
+                    request,
+                    status_code=503,
+                    code="POLICY_UNAVAILABLE",
+                    message="Request policy is unavailable",
+                    retryable=True,
+                )
+            try:
+                cache_policy_lease = await policy_engine.admit(
+                    gateway_key=str(route.gateway_id or gateway_slug),
+                    request_id=request_id,
+                    limits=route.policy,
+                    estimated_tokens=0,
+                    estimated_cost_microusd=0,
+                )
+            except PolicyRejectedError as exc:
+                return _error(
+                    request,
+                    status_code=429,
+                    code=exc.code,
+                    message=exc.message,
+                    retryable=True,
+                    headers=exc.headers,
+                )
+            except PolicyUnavailableError:
+                return _error(
+                    request,
+                    status_code=503,
+                    code="POLICY_UNAVAILABLE",
+                    message="Request policy is unavailable",
+                    retryable=True,
+                )
+        if recorder is not None:
+            try:
+                await recorder.start(
+                    request_id=request_id,
+                    route=cached_route,
+                    model=model,
+                    request_metadata=request_metadata,
+                    price_id=None,
+                )
+            except DuplicateRequestError:
+                if policy_engine is not None and cache_policy_lease is not None:
+                    await policy_engine.settle(cache_policy_lease, 0, 0)
+                return _error(
+                    request,
+                    status_code=409,
+                    code="DUPLICATE_REQUEST_ID",
+                    message="Request ID has already been used",
+                    retryable=False,
+                )
+            except Exception:
+                if policy_engine is not None and cache_policy_lease is not None:
+                    await policy_engine.settle(cache_policy_lease, 0, 0)
+                await logger.aexception("usage_record_start_failed")
+                return _error(
+                    request,
+                    status_code=503,
+                    code="INTERNAL_FAILURE",
+                    message="Request accounting is unavailable",
+                    retryable=True,
+                )
+            await _settle_safely(
+                recorder,
+                request_id=request_id,
+                outcome="cache_hit",
+                status_code=cache_entry.status_code,
+                provider_request_id=None,
+                started_at=started_at,
+                usage=UsageResult(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                cost_microusd=0,
+                first_token_ms=round((time.perf_counter() - started_at) * 1000),
+                final_route=cached_route,
+                price_id=None,
+            )
+        if policy_engine is not None and cache_policy_lease is not None:
+            await policy_engine.settle(cache_policy_lease, 0, 0)
+        cache_headers = dict(cache_entry.headers)
+        cache_headers.update(
+            {
+                "Northgate-Provider": cached_route.provider,
+                "Northgate-Route": _route_label(cached_route),
+                "Northgate-Attempts": "0",
+                "Northgate-Cache": "HIT",
+            }
+        )
+        if cache_policy_lease is not None:
+            cache_headers.update(cache_policy_lease.headers)
+        return Response(
+            content=cache_entry.body,
+            status_code=cache_entry.status_code,
+            headers=cache_headers,
+        )
+
     pricing_repository: PricingRepository | None = request.app.state.pricing_repository
     if settings.routing_source == "database" and pricing_repository is not None and model:
         prices = [
@@ -535,7 +737,6 @@ async def proxy_chat_completions(
         * (candidate.max_retries + 1)
         for candidate, price in zip(routes, prices, strict=True)
     )
-    policy_engine: PolicyEngine | None = request.app.state.policy_engine
     policy_lease: PolicyLease | None = None
     if route.policy.enabled:
         if policy_engine is None:
@@ -573,7 +774,6 @@ async def proxy_chat_completions(
                 retryable=True,
             )
 
-    recorder: UsageRecorder | None = request.app.state.usage_recorder
     price = prices[0]
     if recorder is not None:
         try:
@@ -853,6 +1053,10 @@ async def proxy_chat_completions(
                         route_health_engine=route_health_engine,
                         route_health_key=health_route_key,
                         route_health_token=health_token,
+                        exact_cache=exact_cache,
+                        cache_key=cache_key,
+                        cache_ttl_seconds=route.exact_cache_ttl_seconds,
+                        cache_max_entry_bytes=settings.cache_max_entry_bytes,
                     ),
                     status_code=response.status_code,
                     headers=_downstream_headers(
@@ -860,6 +1064,7 @@ async def proxy_chat_completions(
                         candidate,
                         policy_lease.headers if policy_lease is not None else {},
                         provider_attempt_count,
+                        "MISS" if cache_key is not None else None,
                     ),
                 )
 

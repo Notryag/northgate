@@ -58,6 +58,7 @@ class ResolvedRoute:
     priority: int = 0
     weight: int = 1
     match_metadata: tuple[tuple[str, str], ...] = ()
+    exact_cache_ttl_seconds: int | None = None
     max_retries: int = 0
     retry_status_codes: frozenset[int] = frozenset({429, 500, 502, 503, 504})
     health_failure_threshold: int = 0
@@ -132,6 +133,7 @@ class DatabaseRouteResolver:
                     priority=route.priority,
                     weight=route.weight,
                     match_metadata=tuple(sorted(route.match_metadata.items())),
+                    exact_cache_ttl_seconds=(policy.exact_cache_ttl_seconds if policy else None),
                     max_retries=route.max_retries,
                     retry_status_codes=frozenset(route.retry_status_codes),
                     health_failure_threshold=route.health_failure_threshold,
@@ -164,6 +166,7 @@ def configured_route(settings: Settings) -> ResolvedRoute:
             monthly_spend_microusd=settings.monthly_spend_limit_microusd,
         ),
         priority=0,
+        exact_cache_ttl_seconds=settings.exact_cache_ttl_seconds,
         max_retries=settings.provider_max_retries,
         retry_status_codes=frozenset(
             int(code.strip())
@@ -204,6 +207,7 @@ def configured_routes(settings: Settings) -> list[ResolvedRoute]:
             allowed_metadata_keys=primary.allowed_metadata_keys,
             policy=primary.policy,
             priority=1,
+            exact_cache_ttl_seconds=primary.exact_cache_ttl_seconds,
             max_retries=settings.fallback_provider_max_retries,
             retry_status_codes=primary.retry_status_codes,
             health_failure_threshold=primary.health_failure_threshold,

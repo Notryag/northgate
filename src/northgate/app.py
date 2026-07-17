@@ -13,6 +13,7 @@ from northgate.config import Settings, get_settings
 from northgate.console import console_index
 from northgate.credentials import CredentialCipher
 from northgate.db.database import Database
+from northgate.exact_cache import ExactCache
 from northgate.logging import configure_logging
 from northgate.middleware import RequestContextMiddleware
 from northgate.policy import PolicyEngine
@@ -49,7 +50,10 @@ def create_app(
         )
     )
     redis_required = (
-        settings.routing_source == "database" or configured_policy or settings.route_health_enabled
+        settings.routing_source == "database"
+        or configured_policy
+        or settings.route_health_enabled
+        or settings.exact_cache_ttl_seconds is not None
     )
     active_redis = redis
     owns_redis = False
@@ -104,6 +108,7 @@ def create_app(
     app.state.console_directory = settings.console_directory
     app.state.database = active_database
     app.state.route_resolver = route_resolver
+    app.state.exact_cache = ExactCache(active_redis) if active_redis is not None else None
     app.state.route_health_engine = (
         RouteHealthEngine(active_redis) if active_redis is not None else None
     )

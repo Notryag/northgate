@@ -158,6 +158,15 @@ NORTHGATE_ROUTE_HEALTH_FAILURE_STATUS_CODES=500,502,503,504
 
 数据库 route 还支持 `weight` 和 `match_metadata`。`priority` 越小越先尝试；同一优先级中，更具体的 metadata 规则优先，再按正整数权重选择首个 route。选择使用 Northgate request ID 作为稳定输入，通用规则和未被选中的同级 route 仍保留在 fallback 队列中。例如 `match_metadata={"environment":"production"}` 只匹配带有相同已授权 metadata 的请求。
 
+精确请求缓存是 gateway 级 opt-in 功能：
+
+```text
+NORTHGATE_EXACT_CACHE_TTL_SECONDS=300
+NORTHGATE_CACHE_MAX_ENTRY_BYTES=1048576
+```
+
+缓存键由 gateway、原始请求体、已验证 metadata 和 route 配置共同计算，不在 Redis key 中存储请求内容。只有完整的 `2xx` 响应才会写入；超过大小限制、客户端中断或供应商错误均不缓存。命中响应带有 `Northgate-Cache: HIT` 和 `Northgate-Attempts: 0`，usage 账本记录 `cache_hit`，token 与成本为零。Redis 缓存不可用时请求会旁路到供应商。
+
 直接调用示例：
 
 ```http

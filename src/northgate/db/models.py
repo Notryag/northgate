@@ -107,6 +107,12 @@ class Route(TimestampMixin, Base):
 
 class GatewayPolicy(TimestampMixin, Base):
     __tablename__ = "gateway_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "exact_cache_ttl_seconds IS NULL OR exact_cache_ttl_seconds > 0",
+            name="ck_gateway_policies_exact_cache_ttl_positive",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     gateway_id: Mapped[UUID] = mapped_column(
@@ -117,6 +123,7 @@ class GatewayPolicy(TimestampMixin, Base):
     tokens_per_day: Mapped[int | None] = mapped_column(Integer)
     daily_spend_microusd: Mapped[int | None] = mapped_column(BigInteger)
     monthly_spend_microusd: Mapped[int | None] = mapped_column(BigInteger)
+    exact_cache_ttl_seconds: Mapped[int | None] = mapped_column(Integer)
 
 
 class ModelPrice(TimestampMixin, Base):
