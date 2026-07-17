@@ -27,10 +27,12 @@ resolved application key. These values provide attribution; they never grant
 authorization.
 
 Dayboard commit `3429776` implements this header behind the default-off
-`DAYBOARD_NORTHGATE_METADATA_ENABLED` setting. It uses trusted server context and
-the durable run ID; browser input, model content, and queue payloads cannot supply
-or override the values. North commit `10d2280` provides the host-controlled model
-header boundary used by Dayboard.
+`DAYBOARD_NORTHGATE_METADATA_ENABLED` setting. Dayboard commit `b6c0f58` adds a
+separate Northgate connection and trusted tenant allowlist, so unmatched tenants
+retain the previous provider path. It uses trusted server context and the durable
+run ID; browser input, model content, and queue payloads cannot supply or override
+the values. North commits `10d2280` and `63ff252` provide the host-controlled
+header and per-agent connection boundaries used by Dayboard.
 
 Dayboard's existing `provider_usage_records` may remain temporarily for business
 audit and reconciliation. Northgate becomes the authoritative cross-application

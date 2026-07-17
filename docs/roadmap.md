@@ -161,6 +161,9 @@ Verification:
   metadata through a real Northgate process to the mock provider. North `10d2280`
   and Dayboard `3429776` contain the default-off, rollback-safe integration path;
   no production traffic migration is claimed yet.
+- Dayboard `b6c0f58` and North `63ff252` add tenant allowlist canary selection:
+  selected tenants use a separate Northgate connection while all unmatched
+  tenants retain the original provider configuration.
 
 Deliverables:
 
