@@ -128,6 +128,8 @@ Implemented so far:
 
 - Authenticated Prometheus exposition with bounded HTTP, provider, cache, route, token, and cost labels.
 - OTLP/HTTP server traces with W3C propagation and content-free gateway lifecycle events.
+- Accepted forward-only production migration and stable environment-configuration policies.
+- Verified Compose backup, destructive restore, and maintenance-window upgrade workflows.
 
 Deliverables:
 

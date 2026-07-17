@@ -15,6 +15,8 @@ the pages needed for the current task.
 | Add or change a proxy endpoint | [Architecture](architecture.md), [API design](api-design.md) |
 | Add authentication, limits, or credentials | [Architecture](architecture.md), [API design](api-design.md) |
 | Plan implementation work | [Roadmap](roadmap.md), then the affected contract pages |
+| Configure or migrate Northgate | [Configuration and migrations](operations/configuration-and-migrations.md) |
+| Back up, restore, or upgrade | [Backup and restore](operations/backup-and-restore.md), [Upgrades](operations/upgrades.md) |
 | Integrate Dayboard | [Integration boundaries](integration-boundaries.md), [API design](api-design.md) |
 | Review durable technical decisions | [Architecture decisions](decisions/) |
 
@@ -25,6 +27,7 @@ the pages needed for the current task.
 - [API design](api-design.md): proposed data-plane and control-plane contracts.
 - [Integration boundaries](integration-boundaries.md): ownership split with Dayboard and `north`.
 - [Roadmap](roadmap.md): ordered milestones and completion criteria.
+- [Operations](operations/): configuration, migrations, backup, restore, and upgrade procedures.
 - [Architecture decisions](decisions/): accepted decisions and their tradeoffs.
 
 ## Status vocabulary
@@ -34,6 +37,4 @@ the pages needed for the current task.
 - `implemented`: behavior verified in the current codebase.
 - `deprecated`: supported temporarily but should not be used for new integrations.
 
-M0 foundation, M1 transparent proxy behavior, and M2 limits and analytics are
-implemented. Multi-provider routing and the broader control plane are not
-implemented yet.
+M0 through M3 are implemented. M4 open-source operations is in progress.

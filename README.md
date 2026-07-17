@@ -272,6 +272,20 @@ NORTHGATE_TRACE_EXPORT_TIMEOUT_SECONDS=10.0
 
 Exporter 认证头使用标准 `OTEL_EXPORTER_OTLP_HEADERS` 环境变量。Northgate 为每个 HTTP 请求创建覆盖完整响应流的 server span，接受并向供应商传播 W3C `traceparent`，并记录 gateway error、cache、provider attempt 和熔断跳过事件。Span 使用路由模板，不记录 prompt、response、metadata、API key 或原始 Authorization；`northgate.request_id` 用于与结构化日志和 usage 账本关联。
 
+## 备份、恢复与升级
+
+Compose 环境提供可执行运维入口：
+
+```sh
+./scripts/compose-backup.sh
+NORTHGATE_RESTORE_CONFIRM=northgate ./scripts/compose-restore.sh <backup.dump>
+./scripts/compose-upgrade.sh
+```
+
+恢复会删除并重建目标数据库，校验数据库名和 SHA-256 后才执行，并在完成后保持 Northgate 停止。升级使用维护窗口，先创建验证过的备份，再停止应用、运行单一 Alembic head 并等待 readiness。生产回滚依赖恢复升级前备份和匹配的旧版本，不使用 Alembic downgrade。
+
+完整流程和秘密材料要求见[配置与迁移政策](docs/operations/configuration-and-migrations.md)、[备份与恢复](docs/operations/backup-and-restore.md)和[升级与回滚](docs/operations/upgrades.md)。
+
 ## 文档
 
 从 [文档索引](docs/README.md) 开始，根据任务只读取相关设计页：
