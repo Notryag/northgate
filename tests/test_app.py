@@ -23,6 +23,48 @@ async def test_health_endpoints_include_request_id() -> None:
 
 
 @pytest.mark.anyio
+async def test_metrics_are_disabled_by_default() -> None:
+    app = create_app(Settings(environment="test"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/metrics")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_metrics_require_configured_key_and_use_route_templates() -> None:
+    metrics_key = "metrics-test-secret"
+    app = create_app(
+        Settings(
+            environment="test",
+            metrics_enabled=True,
+            metrics_key_sha256=SecretStr(sha256(metrics_key.encode()).hexdigest()),
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.get("/health/live")
+        await client.get("/arbitrary/high-cardinality-value")
+        unauthorized = await client.get("/metrics")
+        authorized = await client.get(
+            "/metrics", headers={"Authorization": f"Bearer {metrics_key}"}
+        )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert authorized.headers["content-type"].startswith("text/plain")
+    assert 'northgate_build_info{version="0.1.0"} 1.0' in authorized.text
+    assert (
+        'northgate_http_requests_total{method="GET",route="/health/live",status_code="200"}'
+        in authorized.text
+    )
+    assert (
+        'northgate_http_requests_total{method="GET",route="unmatched",status_code="404"}'
+        in authorized.text
+    )
+    assert "arbitrary/high-cardinality-value" not in authorized.text
+
+
+@pytest.mark.anyio
 async def test_valid_request_id_is_preserved() -> None:
     request_id = "req_test-request-123"
     app = create_app(Settings(environment="test"))

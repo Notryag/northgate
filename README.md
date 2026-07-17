@@ -239,6 +239,25 @@ npm ci
 npm run dev
 ```
 
+## Prometheus 指标
+
+Prometheus endpoint 默认关闭。启用并配置独立抓取密钥摘要：
+
+```text
+NORTHGATE_METRICS_ENABLED=true
+# printf '%s' 'metrics-secret' | sha256sum
+NORTHGATE_METRICS_KEY_SHA256=<sha256>
+```
+
+抓取请求使用原始密钥：
+
+```http
+GET /metrics
+Authorization: Bearer metrics-secret
+```
+
+当前指标覆盖 HTTP 请求量、在途请求与端到端延迟，稳定 gateway error，provider attempt/延迟/token/成本，精确缓存命中与写入，以及熔断 route 跳过。HTTP route 使用 FastAPI 模板，指标不包含 request ID、gateway slug、metadata 值、模型输入、响应内容或凭证。未设置 `NORTHGATE_METRICS_KEY_SHA256` 时 endpoint 不鉴权，只应暴露在受控私有网络。
+
 ## 文档
 
 从 [文档索引](docs/README.md) 开始，根据任务只读取相关设计页：

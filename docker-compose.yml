@@ -3,6 +3,8 @@ services:
     build: .
     environment:
       NORTHGATE_ENVIRONMENT: development
+      NORTHGATE_METRICS_ENABLED: ${NORTHGATE_METRICS_ENABLED:-false}
+      NORTHGATE_METRICS_KEY_SHA256: ${NORTHGATE_METRICS_KEY_SHA256:-}
       NORTHGATE_HOST: 0.0.0.0
       NORTHGATE_PORT: 8080
       NORTHGATE_DATABASE_URL: postgresql+asyncpg://northgate:northgate@postgres:5432/northgate

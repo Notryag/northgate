@@ -15,6 +15,7 @@ from northgate.credentials import CredentialCipher
 from northgate.db.database import Database
 from northgate.exact_cache import ExactCache
 from northgate.logging import configure_logging
+from northgate.metrics import Metrics, metrics_response
 from northgate.middleware import RequestContextMiddleware
 from northgate.policy import PolicyEngine
 from northgate.pricing import PricingRepository
@@ -33,6 +34,7 @@ def create_app(
 ) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
+    metrics = Metrics(__version__) if settings.metrics_enabled else None
     database_required = settings.routing_source == "database" or settings.usage_persistence_enabled
     active_database = database
     owns_database = False
@@ -108,6 +110,7 @@ def create_app(
     app.state.console_directory = settings.console_directory
     app.state.database = active_database
     app.state.route_resolver = route_resolver
+    app.state.metrics = metrics
     app.state.exact_cache = ExactCache(active_redis) if active_redis is not None else None
     app.state.route_health_engine = (
         RouteHealthEngine(active_redis) if active_redis is not None else None
@@ -127,7 +130,7 @@ def create_app(
     )
     if upstream_client is not None:
         app.state.upstream_client = upstream_client
-    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(RequestContextMiddleware, metrics=metrics)
 
     @app.get("/health/live", tags=["health"])
     async def liveness() -> dict[str, str]:
@@ -149,6 +152,8 @@ def create_app(
         proxy_chat_completions,
         methods=["POST"],
     )
+    if metrics is not None:
+        app.add_api_route("/metrics", metrics_response, methods=["GET"], include_in_schema=False)
     app.add_api_route("/api/v1/usage/summary", usage_summary, methods=["GET"])
     app.add_api_route("/api/v1/usage/timeseries", usage_timeseries, methods=["GET"])
     app.add_api_route(

@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     environment: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    metrics_enabled: bool = False
+    metrics_key_sha256: SecretStr | None = None
     host: str = "127.0.0.1"
     port: int = 8080
     database_url: SecretStr = SecretStr(

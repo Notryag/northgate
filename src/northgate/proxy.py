@@ -21,6 +21,7 @@ from northgate.exact_cache import (
     ExactCache,
     exact_cache_key,
 )
+from northgate.metrics import Metrics
 from northgate.policy import (
     PolicyEngine,
     PolicyLease,
@@ -76,6 +77,9 @@ def _error(
     retryable: bool,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
+    metrics: Metrics | None = request.app.state.metrics
+    if metrics is not None:
+        metrics.gateway_errors.labels(code=code).inc()
     return JSONResponse(
         status_code=status_code,
         headers=headers,
@@ -215,6 +219,8 @@ class AttemptTotals:
 async def _settle_attempt_safely(
     recorder: UsageRecorder | None,
     *,
+    metrics: Metrics | None,
+    route: ResolvedRoute,
     attempt_id: UUID | None,
     outcome: str,
     status_code: int | None,
@@ -223,6 +229,17 @@ async def _settle_attempt_safely(
     usage: UsageResult,
     cost_microusd: int | None,
 ) -> None:
+    duration_seconds = time.perf_counter() - started_at
+    if metrics is not None:
+        metrics.observe_provider_attempt(
+            provider=route.provider,
+            adapter=route.adapter,
+            outcome=outcome,
+            duration_seconds=duration_seconds,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            cost_microusd=cost_microusd,
+        )
     if recorder is None or attempt_id is None:
         return
     try:
@@ -314,6 +331,7 @@ async def _response_body(
     cache_key: str | None,
     cache_ttl_seconds: int | None,
     cache_max_entry_bytes: int,
+    metrics: Metrics | None,
 ) -> AsyncIterator[bytes]:
     accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
     outcome = "succeeded" if response.status_code < 400 else "provider_error"
@@ -370,11 +388,23 @@ async def _response_body(
                     ),
                     cache_ttl_seconds,
                 )
+                if metrics is not None:
+                    metrics.cache_writes.labels(result="stored").inc()
             except CacheUnavailableError:
+                if metrics is not None:
+                    metrics.cache_writes.labels(result="error").inc()
                 await logger.awarning(
                     "exact_cache_write_failed",
                     northgate_request_id=request_id,
                 )
+        elif (
+            completed
+            and 200 <= response.status_code < 300
+            and cache_key is not None
+            and cache_body is None
+            and metrics is not None
+        ):
+            metrics.cache_writes.labels(result="oversized").inc()
         if outcome != "client_disconnected":
             health_failed = transport_failed or (
                 response.status_code in route.health_failure_status_codes
@@ -402,6 +432,8 @@ async def _response_body(
         totals.add(usage, cost_microusd)
         await _settle_attempt_safely(
             recorder,
+            metrics=metrics,
+            route=route,
             attempt_id=attempt_id,
             outcome=outcome,
             status_code=response.status_code,
@@ -606,9 +638,11 @@ async def proxy_chat_completions(
     forwarded_request_headers = _forwarded_request_headers(request)
     policy_engine: PolicyEngine | None = request.app.state.policy_engine
     recorder: UsageRecorder | None = request.app.state.usage_recorder
+    metrics: Metrics | None = request.app.state.metrics
     exact_cache: ExactCache | None = request.app.state.exact_cache
     cache_key: str | None = None
     cache_entry: CacheEntry | None = None
+    cache_read_error = False
     if route.exact_cache_ttl_seconds is not None and exact_cache is not None:
         cache_key = exact_cache_key(
             gateway_key=str(route.gateway_id or gateway_slug),
@@ -620,6 +654,7 @@ async def proxy_chat_completions(
         try:
             cache_entry = await exact_cache.get(cache_key)
         except CacheUnavailableError:
+            cache_read_error = True
             await logger.awarning(
                 "exact_cache_read_failed",
                 northgate_request_id=request_id,
@@ -635,6 +670,17 @@ async def proxy_chat_completions(
             ),
             None,
         )
+
+    if metrics is not None:
+        if route.exact_cache_ttl_seconds is None:
+            cache_result = "bypass"
+        elif cache_read_error or exact_cache is None:
+            cache_result = "error"
+        elif cache_entry is not None and cached_route is not None:
+            cache_result = "hit"
+        else:
+            cache_result = "miss"
+        metrics.cache_requests.labels(result=cache_result).inc()
 
     if cache_entry is not None and cached_route is not None:
         cache_policy_lease: PolicyLease | None = None
@@ -901,6 +947,12 @@ async def proxy_chat_completions(
                 last_route = candidate
                 last_price = candidate_price
                 last_failure = "routes_unhealthy"
+                if metrics is not None:
+                    metrics.route_skips.labels(
+                        provider=candidate.provider,
+                        adapter=candidate.adapter,
+                        reason="circuit_open",
+                    ).inc()
                 await logger.ainfo(
                     "provider_route_skipped",
                     route=health_route_key,
@@ -963,6 +1015,8 @@ async def proxy_chat_completions(
             last_failure = "provider_timeout"
             await _settle_attempt_safely(
                 recorder,
+                metrics=metrics,
+                route=candidate,
                 attempt_id=attempt_id,
                 outcome="timeout_ambiguous",
                 status_code=None,
@@ -988,6 +1042,8 @@ async def proxy_chat_completions(
             last_failure = "provider_unavailable"
             await _settle_attempt_safely(
                 recorder,
+                metrics=metrics,
+                route=candidate,
                 attempt_id=attempt_id,
                 outcome="connection_error" if is_connection_failure else "transport_ambiguous",
                 status_code=None,
@@ -1018,6 +1074,8 @@ async def proxy_chat_completions(
                     totals.ambiguous = True
                     await _settle_attempt_safely(
                         recorder,
+                        metrics=metrics,
+                        route=candidate,
                         attempt_id=attempt_id,
                         outcome="transport_ambiguous",
                         status_code=response.status_code,
@@ -1042,6 +1100,8 @@ async def proxy_chat_completions(
                     totals.add(retry_usage, retry_cost)
                     await _settle_attempt_safely(
                         recorder,
+                        metrics=metrics,
+                        route=candidate,
                         attempt_id=attempt_id,
                         outcome="retryable_status",
                         status_code=response.status_code,
@@ -1083,6 +1143,7 @@ async def proxy_chat_completions(
                         cache_key=cache_key,
                         cache_ttl_seconds=route.exact_cache_ttl_seconds,
                         cache_max_entry_bytes=settings.cache_max_entry_bytes,
+                        metrics=metrics,
                     ),
                     status_code=response.status_code,
                     headers=_downstream_headers(

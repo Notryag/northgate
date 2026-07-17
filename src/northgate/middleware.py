@@ -5,6 +5,8 @@ from uuid import uuid4
 import structlog
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
+from northgate.metrics import Metrics
+
 logger = structlog.get_logger()
 
 _REQUEST_ID_HEADER = b"northgate-request-id"
@@ -28,8 +30,9 @@ def _request_id(headers: list[tuple[bytes, bytes]]) -> str:
 class RequestContextMiddleware:
     """Attach request context without wrapping or consuming response bodies."""
 
-    def __init__(self, app: object) -> None:
+    def __init__(self, app: object, metrics: Metrics | None = None) -> None:
         self.app = app
+        self.metrics = metrics
 
     async def __call__(self, scope: dict, receive: object, send: object) -> None:
         if scope["type"] != "http":
@@ -42,6 +45,8 @@ class RequestContextMiddleware:
         bind_contextvars(request_id=request_id)
         started_at = time.perf_counter()
         status_code = 500
+        if self.metrics is not None:
+            self.metrics.http_in_progress.inc()
 
         async def send_with_context(message: dict) -> None:
             nonlocal status_code
@@ -69,4 +74,13 @@ class RequestContextMiddleware:
                 duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
             )
         finally:
+            if self.metrics is not None:
+                route = getattr(scope.get("route"), "path", "unmatched")
+                self.metrics.observe_http(
+                    method=scope["method"],
+                    route=route,
+                    status_code=status_code,
+                    started_at=started_at,
+                )
+                self.metrics.http_in_progress.dec()
             clear_contextvars()

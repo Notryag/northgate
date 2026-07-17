@@ -122,6 +122,12 @@ Exit criteria:
 
 ## M4: Open-source operations
 
+Status: in progress
+
+Implemented so far:
+
+- Authenticated Prometheus exposition with bounded HTTP, provider, cache, route, token, and cost labels.
+
 Deliverables:
 
 - Stable configuration and migration policy.

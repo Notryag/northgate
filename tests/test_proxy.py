@@ -71,6 +71,47 @@ async def test_non_streaming_response_is_forwarded_without_client_credential() -
 
 
 @pytest.mark.anyio
+async def test_proxy_exports_provider_usage_metrics() -> None:
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        await request.aread()
+        return httpx.Response(
+            200,
+            json={
+                "id": "metrics-response",
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3,
+                    "total_tokens": 10,
+                },
+            },
+        )
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(_settings(metrics_enabled=True), upstream_client=upstream_client)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH,
+            json={"model": "gpt-test"},
+            headers=_authorization(),
+        )
+        metrics = await client.get("/metrics")
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert (
+        'northgate_provider_attempts_total{adapter="openai_compatible",'
+        'outcome="succeeded",provider="openai"} 1.0'
+        in metrics.text
+    )
+    assert (
+        'northgate_provider_tokens_total{adapter="openai_compatible",'
+        'provider="openai",type="prompt"} 7.0'
+        in metrics.text
+    )
+    assert 'northgate_cache_requests_total{result="bypass"} 1.0' in metrics.text
+
+
+@pytest.mark.anyio
 async def test_azure_adapter_builds_deployment_url_and_api_key_auth() -> None:
     request_body = b'{"model":"deployment/test","stream":false}'
 
