@@ -2,6 +2,7 @@ from hashlib import sha256
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import SecretStr
 
 from northgate.app import create_app
@@ -62,6 +63,34 @@ async def test_metrics_require_configured_key_and_use_route_templates() -> None:
         in authorized.text
     )
     assert "arbitrary/high-cardinality-value" not in authorized.text
+
+
+@pytest.mark.anyio
+async def test_tracing_preserves_parent_context_and_uses_route_template() -> None:
+    exporter = InMemorySpanExporter()
+    app = create_app(
+        Settings(environment="test", tracing_enabled=True),
+        span_exporter=exporter,
+    )
+    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/health/live", headers={"traceparent": traceparent})
+
+    assert response.status_code == 200
+    assert app.state.tracing.force_flush()
+    span = exporter.get_finished_spans()[0]
+    assert span.name == "GET /health/live"
+    assert span.parent is not None
+    assert span.parent.span_id == int("b7ad6b7169203331", 16)
+    assert span.attributes["http.route"] == "/health/live"
+    assert span.attributes["http.response.status_code"] == 200
+    assert span.resource.attributes["service.name"] == "northgate"
+    app.state.tracing.shutdown()
+
+
+def test_tracing_requires_otlp_endpoint_without_injected_exporter() -> None:
+    with pytest.raises(ValueError, match="NORTHGATE_OTLP_TRACES_ENDPOINT"):
+        create_app(Settings(environment="test", tracing_enabled=True))
 
 
 @pytest.mark.anyio

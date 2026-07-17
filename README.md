@@ -258,6 +258,20 @@ Authorization: Bearer metrics-secret
 
 当前指标覆盖 HTTP 请求量、在途请求与端到端延迟，稳定 gateway error，provider attempt/延迟/token/成本，精确缓存命中与写入，以及熔断 route 跳过。HTTP route 使用 FastAPI 模板，指标不包含 request ID、gateway slug、metadata 值、模型输入、响应内容或凭证。未设置 `NORTHGATE_METRICS_KEY_SHA256` 时 endpoint 不鉴权，只应暴露在受控私有网络。
 
+## OpenTelemetry traces
+
+Tracing 默认关闭，通过 OTLP/HTTP exporter 发送到 collector：
+
+```text
+NORTHGATE_TRACING_ENABLED=true
+NORTHGATE_TRACE_SERVICE_NAME=northgate
+NORTHGATE_OTLP_TRACES_ENDPOINT=http://otel-collector:4318/v1/traces
+NORTHGATE_TRACE_SAMPLE_RATIO=1.0
+NORTHGATE_TRACE_EXPORT_TIMEOUT_SECONDS=10.0
+```
+
+Exporter 认证头使用标准 `OTEL_EXPORTER_OTLP_HEADERS` 环境变量。Northgate 为每个 HTTP 请求创建覆盖完整响应流的 server span，接受并向供应商传播 W3C `traceparent`，并记录 gateway error、cache、provider attempt 和熔断跳过事件。Span 使用路由模板，不记录 prompt、response、metadata、API key 或原始 Authorization；`northgate.request_id` 用于与结构化日志和 usage 账本关联。
+
 ## 文档
 
 从 [文档索引](docs/README.md) 开始，根据任务只读取相关设计页：

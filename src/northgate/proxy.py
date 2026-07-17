@@ -44,6 +44,7 @@ from northgate.routing import (
     configured_routes,
     select_routes,
 )
+from northgate.tracing import Tracing, add_span_event
 from northgate.usage import (
     DuplicateRequestError,
     UsageAccumulator,
@@ -80,6 +81,14 @@ def _error(
     metrics: Metrics | None = request.app.state.metrics
     if metrics is not None:
         metrics.gateway_errors.labels(code=code).inc()
+    add_span_event(
+        "northgate.gateway_error",
+        {
+            "northgate.error.code": code,
+            "http.response.status_code": status_code,
+            "northgate.error.retryable": retryable,
+        },
+    )
     return JSONResponse(
         status_code=status_code,
         headers=headers,
@@ -240,6 +249,19 @@ async def _settle_attempt_safely(
             completion_tokens=usage.completion_tokens,
             cost_microusd=cost_microusd,
         )
+    add_span_event(
+        "northgate.provider_attempt",
+        {
+            "northgate.provider": route.provider,
+            "northgate.adapter": route.adapter,
+            "northgate.attempt.outcome": outcome,
+            "northgate.attempt.duration_ms": round(duration_seconds * 1000, 2),
+            "northgate.usage.prompt_tokens": usage.prompt_tokens,
+            "northgate.usage.completion_tokens": usage.completion_tokens,
+            "northgate.cost_microusd": cost_microusd,
+            "http.response.status_code": status_code,
+        },
+    )
     if recorder is None or attempt_id is None:
         return
     try:
@@ -636,9 +658,13 @@ async def proxy_chat_completions(
         )
 
     forwarded_request_headers = _forwarded_request_headers(request)
+    cache_request_headers = dict(forwarded_request_headers)
     policy_engine: PolicyEngine | None = request.app.state.policy_engine
     recorder: UsageRecorder | None = request.app.state.usage_recorder
     metrics: Metrics | None = request.app.state.metrics
+    tracing: Tracing | None = request.app.state.tracing
+    if tracing is not None:
+        tracing.inject(forwarded_request_headers)
     exact_cache: ExactCache | None = request.app.state.exact_cache
     cache_key: str | None = None
     cache_entry: CacheEntry | None = None
@@ -648,7 +674,7 @@ async def proxy_chat_completions(
             gateway_key=str(route.gateway_id or gateway_slug),
             body=body,
             metadata=request_metadata,
-            request_headers=forwarded_request_headers,
+            request_headers=cache_request_headers,
             routes=routes,
         )
         try:
@@ -671,16 +697,17 @@ async def proxy_chat_completions(
             None,
         )
 
+    if route.exact_cache_ttl_seconds is None:
+        cache_result = "bypass"
+    elif cache_read_error or exact_cache is None:
+        cache_result = "error"
+    elif cache_entry is not None and cached_route is not None:
+        cache_result = "hit"
+    else:
+        cache_result = "miss"
     if metrics is not None:
-        if route.exact_cache_ttl_seconds is None:
-            cache_result = "bypass"
-        elif cache_read_error or exact_cache is None:
-            cache_result = "error"
-        elif cache_entry is not None and cached_route is not None:
-            cache_result = "hit"
-        else:
-            cache_result = "miss"
         metrics.cache_requests.labels(result=cache_result).inc()
+    add_span_event("northgate.cache", {"northgate.cache.result": cache_result})
 
     if cache_entry is not None and cached_route is not None:
         cache_policy_lease: PolicyLease | None = None
@@ -953,6 +980,14 @@ async def proxy_chat_completions(
                         adapter=candidate.adapter,
                         reason="circuit_open",
                     ).inc()
+                add_span_event(
+                    "northgate.route_skipped",
+                    {
+                        "northgate.provider": candidate.provider,
+                        "northgate.adapter": candidate.adapter,
+                        "northgate.route_skip.reason": "circuit_open",
+                    },
+                )
                 await logger.ainfo(
                     "provider_route_skipped",
                     route=health_route_key,

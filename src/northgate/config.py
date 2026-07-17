@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     metrics_enabled: bool = False
     metrics_key_sha256: SecretStr | None = None
+    tracing_enabled: bool = False
+    trace_service_name: str = "northgate"
+    otlp_traces_endpoint: str | None = None
+    trace_sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    trace_export_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
     host: str = "127.0.0.1"
     port: int = 8080
     database_url: SecretStr = SecretStr(

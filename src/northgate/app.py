@@ -5,6 +5,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from opentelemetry.sdk.trace.export import SpanExporter
 from redis.asyncio import Redis
 
 from northgate import __version__
@@ -22,6 +23,7 @@ from northgate.pricing import PricingRepository
 from northgate.proxy import proxy_chat_completions
 from northgate.route_health import RouteHealthEngine
 from northgate.routing import DatabaseRouteResolver
+from northgate.tracing import Tracing
 from northgate.usage import UsageRecorder
 
 
@@ -31,6 +33,7 @@ def create_app(
     upstream_client: httpx.AsyncClient | None = None,
     database: Database | None = None,
     redis: Redis | None = None,
+    span_exporter: SpanExporter | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
@@ -74,6 +77,11 @@ def create_app(
             active_database,
             CredentialCipher(encryption_key.get_secret_value()),
         )
+    tracing = (
+        Tracing(settings, __version__, span_exporter=span_exporter)
+        if settings.tracing_enabled
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -97,6 +105,8 @@ def create_app(
                 await active_database.close()
             if owns_redis and active_redis is not None:
                 await active_redis.aclose()
+            if tracing is not None:
+                tracing.shutdown()
 
     app = FastAPI(
         title="Northgate",
@@ -111,6 +121,7 @@ def create_app(
     app.state.database = active_database
     app.state.route_resolver = route_resolver
     app.state.metrics = metrics
+    app.state.tracing = tracing
     app.state.exact_cache = ExactCache(active_redis) if active_redis is not None else None
     app.state.route_health_engine = (
         RouteHealthEngine(active_redis) if active_redis is not None else None
@@ -130,7 +141,7 @@ def create_app(
     )
     if upstream_client is not None:
         app.state.upstream_client = upstream_client
-    app.add_middleware(RequestContextMiddleware, metrics=metrics)
+    app.add_middleware(RequestContextMiddleware, metrics=metrics, tracing=tracing)
 
     @app.get("/health/live", tags=["health"])
     async def liveness() -> dict[str, str]:

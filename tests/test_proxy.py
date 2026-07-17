@@ -5,6 +5,7 @@ from hashlib import sha256
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import SecretStr
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
@@ -100,15 +101,62 @@ async def test_proxy_exports_provider_usage_metrics() -> None:
     assert response.status_code == 200
     assert (
         'northgate_provider_attempts_total{adapter="openai_compatible",'
-        'outcome="succeeded",provider="openai"} 1.0'
-        in metrics.text
+        'outcome="succeeded",provider="openai"} 1.0' in metrics.text
     )
     assert (
         'northgate_provider_tokens_total{adapter="openai_compatible",'
-        'provider="openai",type="prompt"} 7.0'
-        in metrics.text
+        'provider="openai",type="prompt"} 7.0' in metrics.text
     )
     assert 'northgate_cache_requests_total{result="bypass"} 1.0' in metrics.text
+
+
+@pytest.mark.anyio
+async def test_proxy_exports_trace_events_and_propagates_context() -> None:
+    exporter = InMemorySpanExporter()
+    upstream_traceparent = ""
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal upstream_traceparent
+        upstream_traceparent = request.headers["traceparent"]
+        assert "baggage" not in request.headers
+        await request.aread()
+        return httpx.Response(
+            200,
+            json={
+                "id": "traced-response",
+                "usage": {
+                    "prompt_tokens": 4,
+                    "completion_tokens": 2,
+                    "total_tokens": 6,
+                },
+            },
+        )
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(tracing_enabled=True),
+        upstream_client=upstream_client,
+        span_exporter=exporter,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH,
+            json={"model": "gpt-test"},
+            headers={**_authorization(), "baggage": "tenant_id=must-not-propagate"},
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert upstream_traceparent.startswith("00-")
+    assert app.state.tracing.force_flush()
+    span = exporter.get_finished_spans()[0]
+    assert span.name == "POST /v1/gateways/{gateway_slug}/openai/chat/completions"
+    assert [event.name for event in span.events] == [
+        "northgate.cache",
+        "northgate.provider_attempt",
+    ]
+    assert "model" not in span.attributes
+    app.state.tracing.shutdown()
 
 
 @pytest.mark.anyio

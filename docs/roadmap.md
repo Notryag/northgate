@@ -127,6 +127,7 @@ Status: in progress
 Implemented so far:
 
 - Authenticated Prometheus exposition with bounded HTTP, provider, cache, route, token, and cost labels.
+- OTLP/HTTP server traces with W3C propagation and content-free gateway lifecycle events.
 
 Deliverables:
 

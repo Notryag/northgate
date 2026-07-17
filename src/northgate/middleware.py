@@ -6,6 +6,7 @@ import structlog
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from northgate.metrics import Metrics
+from northgate.tracing import ServerSpan, Tracing
 
 logger = structlog.get_logger()
 
@@ -30,9 +31,15 @@ def _request_id(headers: list[tuple[bytes, bytes]]) -> str:
 class RequestContextMiddleware:
     """Attach request context without wrapping or consuming response bodies."""
 
-    def __init__(self, app: object, metrics: Metrics | None = None) -> None:
+    def __init__(
+        self,
+        app: object,
+        metrics: Metrics | None = None,
+        tracing: Tracing | None = None,
+    ) -> None:
         self.app = app
         self.metrics = metrics
+        self.tracing = tracing
 
     async def __call__(self, scope: dict, receive: object, send: object) -> None:
         if scope["type"] != "http":
@@ -45,6 +52,12 @@ class RequestContextMiddleware:
         bind_contextvars(request_id=request_id)
         started_at = time.perf_counter()
         status_code = 500
+        server_span: ServerSpan | None = None
+        if self.tracing is not None:
+            server_span = self.tracing.start_server_span(
+                method=scope["method"],
+                headers=scope["headers"],
+            )
         if self.metrics is not None:
             self.metrics.http_in_progress.inc()
 
@@ -57,7 +70,9 @@ class RequestContextMiddleware:
 
         try:
             await self.app(scope, receive, send_with_context)
-        except Exception:
+        except Exception as exc:
+            if server_span is not None:
+                server_span.span.record_exception(exc)
             await logger.aexception(
                 "request_failed",
                 method=scope["method"],
@@ -83,4 +98,12 @@ class RequestContextMiddleware:
                     started_at=started_at,
                 )
                 self.metrics.http_in_progress.dec()
+            if server_span is not None and self.tracing is not None:
+                route = getattr(scope.get("route"), "path", "unmatched")
+                self.tracing.finish_server_span(
+                    server_span,
+                    route=route,
+                    status_code=status_code,
+                    request_id=request_id,
+                )
             clear_contextvars()
