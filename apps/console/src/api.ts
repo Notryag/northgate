@@ -47,6 +47,24 @@ export interface RouteUsageReport {
   routes: RouteUsage[];
 }
 
+export interface TenantUsage {
+  tenant_id: string | null;
+  requests: number;
+  successful_requests: number;
+  error_requests: number;
+  in_flight_requests: number;
+  success_rate_percent: number;
+  total_tokens: number;
+  cost_microusd: number;
+  average_latency_ms: number | null;
+}
+
+export interface TenantUsageReport {
+  start: string;
+  end: string;
+  tenants: TenantUsage[];
+}
+
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message);
@@ -68,7 +86,7 @@ export async function loadUsage(
   operatorKey: string,
   hours: number,
   interval: "hour" | "day",
-): Promise<[UsageSummary, UsageSeries, RouteUsageReport]> {
+): Promise<[UsageSummary, UsageSeries, RouteUsageReport, TenantUsageReport]> {
   const end = new Date();
   const start = new Date(end.getTime() - hours * 60 * 60 * 1000);
   const query = new URLSearchParams({ start: start.toISOString(), end: end.toISOString() });
@@ -78,5 +96,6 @@ export async function loadUsage(
     request<UsageSummary>(`/api/v1/usage/summary?${query}`, operatorKey),
     request<UsageSeries>(`/api/v1/usage/timeseries?${seriesQuery}`, operatorKey),
     request<RouteUsageReport>(`/api/v1/usage/routes?${query}`, operatorKey),
+    request<TenantUsageReport>(`/api/v1/usage/tenants?${query}`, operatorKey),
   ]);
 }

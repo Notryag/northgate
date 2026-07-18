@@ -9,7 +9,13 @@ from opentelemetry.sdk.trace.export import SpanExporter
 from redis.asyncio import Redis
 
 from northgate import __version__
-from northgate.analytics import usage_attempts, usage_routes, usage_summary, usage_timeseries
+from northgate.analytics import (
+    usage_attempts,
+    usage_routes,
+    usage_summary,
+    usage_tenants,
+    usage_timeseries,
+)
 from northgate.config import Settings, get_settings
 from northgate.console import console_index
 from northgate.control import router as control_router
@@ -176,6 +182,7 @@ def create_app(
     app.add_api_route("/api/v1/usage/summary", usage_summary, methods=["GET"])
     app.add_api_route("/api/v1/usage/timeseries", usage_timeseries, methods=["GET"])
     app.add_api_route("/api/v1/usage/routes", usage_routes, methods=["GET"])
+    app.add_api_route("/api/v1/usage/tenants", usage_tenants, methods=["GET"])
     app.add_api_route(
         "/api/v1/usage/requests/{request_id}/attempts",
         usage_attempts,

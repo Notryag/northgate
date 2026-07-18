@@ -134,6 +134,12 @@ checking weighted traffic distribution. They require a dedicated operator key
 and support a maximum 90-day range with optional project and gateway filters.
 Application keys are not control-plane credentials.
 
+`/api/v1/usage/tenants` groups authenticated `tenant_id` request metadata and
+returns request outcomes, completed-request success rate, tokens, cost, and average
+latency. Requests without a tenant dimension are returned as one unattributed group.
+The endpoint does not return user or run metadata and supports the same range,
+project, and gateway filters as the other aggregate usage APIs.
+
 `/api/v1/usage/requests/{request_id}/attempts` exposes the ordered provider
 attempt ledger to operators. Retry and fallback happen only before downstream
 response headers are sent; mid-stream failures terminate the stream.

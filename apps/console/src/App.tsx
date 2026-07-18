@@ -12,6 +12,7 @@ import {
   ApiError,
   loadUsage,
   type RouteUsageReport,
+  type TenantUsageReport,
   type UsageSeries,
   type UsageSummary,
 } from "./api";
@@ -75,6 +76,7 @@ export function App() {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [series, setSeries] = useState<UsageSeries | null>(null);
   const [routes, setRoutes] = useState<RouteUsageReport | null>(null);
+  const [tenants, setTenants] = useState<TenantUsageReport | null>(null);
   const [status, setStatus] = useState<"connecting" | "online" | "error">("connecting");
   const [updated, setUpdated] = useState("Not loaded");
 
@@ -82,7 +84,7 @@ export function App() {
     if (!operatorKey) { setAccessOpen(true); return; }
     setStatus("connecting");
     try {
-      const [nextSummary, nextSeries, nextRoutes] = await loadUsage(
+      const [nextSummary, nextSeries, nextRoutes, nextTenants] = await loadUsage(
         operatorKey,
         hours,
         interval,
@@ -90,6 +92,7 @@ export function App() {
       setSummary(nextSummary);
       setSeries(nextSeries);
       setRoutes(nextRoutes);
+      setTenants(nextTenants);
       setUpdated(`Updated ${new Date().toLocaleTimeString()}`);
       setStatus("online");
       setAccessError("");
@@ -133,6 +136,54 @@ export function App() {
         <section className="chart-section">
           <div className="section-heading"><div><h2>Traffic and token volume</h2><p>{series ? `${new Date(series.start).toLocaleString()} - ${new Date(series.end).toLocaleString()}` : "-"}</p></div><div className="legend"><span className="requests-key">Requests</span><span className="tokens-key">Tokens</span></div></div>
           <Suspense fallback={<div className="chart-wrap"><div className="empty-chart">Loading chart</div></div>}><UsageChart points={series?.points ?? []} /></Suspense>
+        </section>
+        <section className="table-section">
+          <div className="section-heading">
+            <div>
+              <h2>Tenant usage</h2>
+              <p>{tenants ? `${number.format(tenants.tenants.length)} tenant groups` : "-"}</p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tenant</th>
+                  <th>Requests</th>
+                  <th>Success rate</th>
+                  <th>Failed</th>
+                  <th>In flight</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                  <th>Avg latency</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tenants?.tenants.length ? (
+                  tenants.tenants.map((tenant) => (
+                    <tr key={tenant.tenant_id ?? "unattributed"}>
+                      <td className="tenant-id">{tenant.tenant_id ?? "Unattributed"}</td>
+                      <td>{number.format(tenant.requests)}</td>
+                      <td>{tenant.success_rate_percent.toFixed(2)}%</td>
+                      <td>{number.format(tenant.error_requests)}</td>
+                      <td>{number.format(tenant.in_flight_requests)}</td>
+                      <td>{number.format(tenant.total_tokens)}</td>
+                      <td>{cost(tenant.cost_microusd)}</td>
+                      <td>
+                        {tenant.average_latency_ms == null
+                          ? "-"
+                          : `${number.format(tenant.average_latency_ms)} ms`}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={8} className="empty">No tenant usage in this range</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
         <section className="table-section">
           <div className="section-heading">

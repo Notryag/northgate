@@ -253,6 +253,90 @@ async def usage_routes(
     )
 
 
+async def usage_tenants(
+    request: Request,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    project_id: UUID | None = None,
+    gateway_id: UUID | None = None,
+) -> Response:
+    authorization_error = authorize_operator(request)
+    if authorization_error is not None:
+        return authorization_error
+    selected_range = _range(start, end)
+    if selected_range is None:
+        return JSONResponse(
+            {"error": {"code": "INVALID_TIME_RANGE", "message": "Invalid time range"}},
+            status_code=400,
+        )
+    database = _database(request)
+    if database is None:
+        return JSONResponse(
+            {"error": {"code": "ANALYTICS_UNAVAILABLE", "message": "Analytics unavailable"}},
+            status_code=503,
+        )
+
+    resolved_start, resolved_end = selected_range
+    filters = [
+        RequestRecord.started_at >= resolved_start,
+        RequestRecord.started_at < resolved_end,
+    ]
+    if project_id is not None:
+        filters.append(RequestRecord.project_id == project_id)
+    if gateway_id is not None:
+        filters.append(RequestRecord.gateway_id == gateway_id)
+    tenant_id = RequestRecord.request_metadata["tenant_id"].as_string().label("tenant_id")
+    statement = (
+        select(
+            tenant_id,
+            func.count().label("requests"),
+            func.sum(case((RequestRecord.outcome == "succeeded", 1), else_=0)).label("successful"),
+            func.sum(case((RequestRecord.outcome == "started", 1), else_=0)).label("in_flight"),
+            func.sum(
+                case(
+                    (RequestRecord.outcome.not_in(["succeeded", "started"]), 1),
+                    else_=0,
+                )
+            ).label("errors"),
+            func.coalesce(func.sum(RequestRecord.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(RequestRecord.cost_microusd), 0).label("cost_microusd"),
+            func.avg(RequestRecord.latency_ms).label("average_latency_ms"),
+        )
+        .where(*filters)
+        .group_by(tenant_id)
+        .order_by(func.count().desc(), tenant_id.asc().nulls_last())
+    )
+    async with database.sessions() as session:
+        rows = (await session.execute(statement)).all()
+    return JSONResponse(
+        {
+            "start": resolved_start.isoformat(),
+            "end": resolved_end.isoformat(),
+            "tenants": [
+                {
+                    "tenant_id": row.tenant_id,
+                    "requests": int(row.requests),
+                    "successful_requests": int(row.successful),
+                    "error_requests": int(row.errors),
+                    "in_flight_requests": int(row.in_flight),
+                    "success_rate_percent": round(
+                        int(row.successful) * 100 / (int(row.successful) + int(row.errors)),
+                        2,
+                    )
+                    if int(row.successful) + int(row.errors)
+                    else 0,
+                    "total_tokens": int(row.total_tokens),
+                    "cost_microusd": int(row.cost_microusd),
+                    "average_latency_ms": round(float(row.average_latency_ms), 2)
+                    if row.average_latency_ms is not None
+                    else None,
+                }
+                for row in rows
+            ],
+        }
+    )
+
+
 async def usage_attempts(request: Request, request_id: str) -> Response:
     authorization_error = authorize_operator(request)
     if authorization_error is not None:
