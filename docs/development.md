@@ -43,3 +43,26 @@ The pre-canary Dayboard environment backup is stored at
 root-only checksum. Rollback restores that file and recreates only the Dayboard API
 and worker containers. Provider and application secrets are stored separately as
 root-only files and are intentionally not recorded here.
+
+### 2026-07-18: Dayboard full tenant rollout
+
+- Observed the single-tenant deployment for 11 hours. Northgate, Dayboard API, and
+  Dayboard worker remained healthy, and the previous Northgate documentation CI
+  run completed successfully.
+- No organic canary traffic arrived during that window, so ran one minimal
+  Dayboard agent smoke through the deployed factory, Northgate, and the real
+  provider without writing Dayboard business data or printing model content.
+- The smoke completed with HTTP 200 and outcome `succeeded`: one provider attempt,
+  no retry or fallback, 1,169 ms total latency, 1,164 ms first-token latency, and
+  complete tenant, user, and run attribution.
+- Added the remaining production tenant to the allowlist. Production contained two
+  tenants with one member each at rollout time; both now select Northgate and
+  trusted metadata through Dayboard's deployed configuration.
+- Recreated only the API and worker containers, confirmed both healthy, confirmed
+  HTTP 200 from Northgate readiness, and found no startup or proxy errors.
+- Kept Dayboard's original provider connection in the environment for rollback.
+
+The pre-full-rollout environment backup is stored at
+`/var/backups/dayboard/config/dayboard-env-pre-full-northgate-20260718T023133Z.env`
+with a verified root-only checksum. Restoring it and recreating only API and worker
+returns Dayboard to the single-tenant canary.
