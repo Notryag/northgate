@@ -18,6 +18,7 @@ from northgate.db.models import (
     ApplicationKey,
     Gateway,
     GatewayPolicy,
+    ModelPrice,
     Organization,
     Project,
     ProviderCredential,
@@ -153,6 +154,29 @@ class GatewayPolicyReplace(BaseModel):
     exact_cache_ttl_seconds: int | None = Field(ge=1, le=86_400)
 
 
+class ModelPriceCreate(BaseModel):
+    provider: str = Field(min_length=1, max_length=40)
+    model: str = Field(min_length=1, max_length=200)
+    effective_from: datetime
+    input_microusd_per_million: int = Field(ge=0, le=9_000_000_000_000_000)
+    output_microusd_per_million: int = Field(ge=0, le=9_000_000_000_000_000)
+
+    @field_validator("provider", "model")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("effective_from")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("effective_from must include a timezone")
+        return value
+
+
 def _error(code: str, message: str, status_code: int) -> JSONResponse:
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status_code)
 
@@ -191,7 +215,8 @@ def _common(
     | ApplicationKey
     | ProviderCredential
     | Route
-    | GatewayPolicy,
+    | GatewayPolicy
+    | ModelPrice,
 ) -> dict[str, object]:
     return {
         "id": resource.id,
@@ -569,6 +594,68 @@ async def update_route(request: Request, route_id: UUID, payload: RouteUpdate) -
             "enabled": resource.enabled,
         }
     )
+
+
+def _model_price(resource: ModelPrice) -> dict[str, object]:
+    return {
+        **_common(resource),
+        "provider": resource.provider,
+        "model": resource.model,
+        "effective_from": resource.effective_from,
+        "input_microusd_per_million": resource.input_microusd_per_million,
+        "output_microusd_per_million": resource.output_microusd_per_million,
+    }
+
+
+@router.get("/model-prices")
+async def list_model_prices(
+    request: Request,
+    provider: str | None = None,
+    model: str | None = None,
+) -> Response:
+    if error := _preflight(request):
+        return error
+    statement = select(ModelPrice)
+    if provider is not None:
+        statement = statement.where(ModelPrice.provider == provider)
+    if model is not None:
+        statement = statement.where(ModelPrice.model == model)
+    statement = statement.order_by(
+        ModelPrice.provider,
+        ModelPrice.model,
+        ModelPrice.effective_from.desc(),
+    )
+    database = _database(request)
+    assert database is not None
+    async with database.sessions() as session:
+        resources = (await session.scalars(statement)).all()
+    return _json([_model_price(item) for item in resources])
+
+
+@router.post("/model-prices")
+async def create_model_price(request: Request, payload: ModelPriceCreate) -> Response:
+    if error := _preflight(request):
+        return error
+    database = _database(request)
+    assert database is not None
+    async with database.sessions() as session:
+        if await session.scalar(
+            select(ModelPrice.id).where(
+                ModelPrice.provider == payload.provider,
+                ModelPrice.model == payload.model,
+                ModelPrice.effective_from == payload.effective_from,
+            )
+        ):
+            return _error("RESOURCE_CONFLICT", "Model price already exists", 409)
+        resource = ModelPrice(**payload.model_dump())
+        session.add(resource)
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            return _error("RESOURCE_CONFLICT", "Model price already exists", 409)
+        await session.refresh(resource)
+    return _json(_model_price(resource), 201)
 
 
 def _policy(resource: GatewayPolicy) -> dict[str, object]:

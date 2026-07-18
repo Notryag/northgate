@@ -10,12 +10,17 @@ import {
 } from "lucide-react";
 import {
   ApiError,
+  createModelPrice,
+  loadModelPrices,
   loadUsage,
+  type ModelPrice,
+  type ModelPriceCreateInput,
   type RouteUsageReport,
   type TenantUsageReport,
   type UsageSeries,
   type UsageSummary,
 } from "./api";
+import { PricingPanel } from "./PricingPanel";
 
 const UsageChart = lazy(() => import("./UsageChart"));
 
@@ -77,6 +82,9 @@ export function App() {
   const [series, setSeries] = useState<UsageSeries | null>(null);
   const [routes, setRoutes] = useState<RouteUsageReport | null>(null);
   const [tenants, setTenants] = useState<TenantUsageReport | null>(null);
+  const [modelPrices, setModelPrices] = useState<ModelPrice[]>([]);
+  const [pricingBusy, setPricingBusy] = useState(false);
+  const [pricingError, setPricingError] = useState("");
   const [status, setStatus] = useState<"connecting" | "online" | "error">("connecting");
   const [updated, setUpdated] = useState("Not loaded");
 
@@ -84,15 +92,16 @@ export function App() {
     if (!operatorKey) { setAccessOpen(true); return; }
     setStatus("connecting");
     try {
-      const [nextSummary, nextSeries, nextRoutes, nextTenants] = await loadUsage(
-        operatorKey,
-        hours,
-        interval,
-      );
+      const [[nextSummary, nextSeries, nextRoutes, nextTenants], nextModelPrices] =
+        await Promise.all([
+          loadUsage(operatorKey, hours, interval),
+          loadModelPrices(operatorKey),
+        ]);
       setSummary(nextSummary);
       setSeries(nextSeries);
       setRoutes(nextRoutes);
       setTenants(nextTenants);
+      setModelPrices(nextModelPrices);
       setUpdated(`Updated ${new Date().toLocaleTimeString()}`);
       setStatus("online");
       setAccessError("");
@@ -108,6 +117,19 @@ export function App() {
   }, [operatorKey, hours, interval]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const addModelPrice = useCallback(async (input: ModelPriceCreateInput) => {
+    setPricingBusy(true);
+    setPricingError("");
+    try {
+      await createModelPrice(operatorKey, input);
+      setModelPrices(await loadModelPrices(operatorKey));
+    } catch (error) {
+      setPricingError(error instanceof Error ? error.message : "Unable to add model price");
+    } finally {
+      setPricingBusy(false);
+    }
+  }, [operatorKey]);
 
   const errorRate = summary?.requests ? (summary.error_requests / summary.requests) * 100 : 0;
   return (
@@ -241,6 +263,7 @@ export function App() {
           <div className="section-heading"><h2>Usage buckets</h2></div>
           <div className="table-wrap"><table><thead><tr><th>Timestamp</th><th>Requests</th><th>Tokens</th><th>Cost</th><th>Avg latency</th></tr></thead><tbody>{series?.points.length ? series.points.slice().reverse().map((point) => <tr key={point.timestamp}><td>{timestamp(point.timestamp)}</td><td>{number.format(point.requests)}</td><td>{number.format(point.total_tokens)}</td><td>{cost(point.cost_microusd)}</td><td>{point.average_latency_ms == null ? "-" : `${number.format(point.average_latency_ms)} ms`}</td></tr>) : <tr><td colSpan={5} className="empty">No usage in this range</td></tr>}</tbody></table></div>
         </section>
+        <PricingPanel prices={modelPrices} busy={pricingBusy} error={pricingError} onCreate={addModelPrice} />
       </main>
       <AccessDialog open={accessOpen} error={accessError} onConnect={(value) => { sessionStorage.setItem(KEY_STORAGE, value); setOperatorKey(value); setAccessOpen(false); }} />
     </>

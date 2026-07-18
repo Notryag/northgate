@@ -65,21 +65,57 @@ export interface TenantUsageReport {
   tenants: TenantUsage[];
 }
 
+export interface ModelPrice {
+  id: string;
+  created_at: string;
+  provider: string;
+  model: string;
+  effective_from: string;
+  input_microusd_per_million: number;
+  output_microusd_per_million: number;
+}
+
+export interface ModelPriceCreateInput {
+  provider: string;
+  model: string;
+  effective_from: string;
+  input_microusd_per_million: number;
+  output_microusd_per_million: number;
+}
+
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message);
   }
 }
 
-async function request<T>(path: string, operatorKey: string): Promise<T> {
+async function request<T>(path: string, operatorKey: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${operatorKey}`);
   const response = await fetch(path, {
-    headers: { Authorization: `Bearer ${operatorKey}` },
+    ...init,
+    headers,
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     throw new ApiError(response.status, payload?.error?.message ?? `Request failed (${response.status})`);
   }
   return response.json() as Promise<T>;
+}
+
+export async function loadModelPrices(operatorKey: string): Promise<ModelPrice[]> {
+  return request<ModelPrice[]>("/api/v1/model-prices", operatorKey);
+}
+
+export async function createModelPrice(
+  operatorKey: string,
+  input: ModelPriceCreateInput,
+): Promise<ModelPrice> {
+  return request<ModelPrice>("/api/v1/model-prices", operatorKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
 }
 
 export async function loadUsage(

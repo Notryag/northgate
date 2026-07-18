@@ -10,12 +10,14 @@ keeping rollback independent from Northgate itself.
 
 1. Create the project, gateway, application key, provider credentials, routes,
    and gateway policy through the operator control API.
-2. Keep the application's previous provider base URL and credential available in
+2. Add an effective-dated model price for every exact provider/model pair before
+   enabling spend limits or treating cost analytics as complete.
+3. Keep the application's previous provider base URL and credential available in
    its secret manager for the reconciliation period. Do not copy that credential
    into source code or traffic metadata.
-3. Confirm Northgate readiness and record the application key ID, gateway ID,
+4. Confirm Northgate readiness and record the application key ID, gateway ID,
    route IDs, previous base URL, and rollback owner.
-4. Use a non-production model or account when possible. Compatibility checks make
+5. Use a non-production model or account when possible. Compatibility checks make
    real provider requests and may incur cost.
 
 For applications on the shared platform Docker network, use the platform Compose
@@ -78,6 +80,7 @@ cost reconcile for the previous stage. Keep request content logging disabled.
 ## Observe and reconcile
 
 - Use `/api/v1/usage/summary` for final request outcomes.
+- Use `/api/v1/usage/tenants` for authenticated tenant attribution and reconciliation.
 - Use `/api/v1/usage/routes` for actual upstream load, retry, and fallback share.
 - Use `/api/v1/usage/requests/{request_id}/attempts` for ambiguous or costly requests.
 - Compare provider invoices or usage exports with Northgate attempt tokens and cost.

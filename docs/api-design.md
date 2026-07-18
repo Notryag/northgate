@@ -154,6 +154,7 @@ response headers are sent; mid-stream failures terminate the stream.
 /api/v1/gateways
 /api/v1/routes
 /api/v1/policies
+/api/v1/model-prices
 /api/v1/usage
 ```
 
@@ -169,6 +170,9 @@ POST /api/v1/provider-credentials      {project_id, name, provider, base_url,
                                         adapter, adapter_config, api_key}
 POST /api/v1/routes                    {gateway_id, provider_credential_id, name,
                                         priority, weight, match_metadata, ...}
+POST /api/v1/model-prices              {provider, model, effective_from,
+                                        input_microusd_per_million,
+                                        output_microusd_per_million}
 PUT  /api/v1/policies/{gateway_id}     {requests_per_minute, concurrent_requests,
                                         tokens_per_day, daily_spend_microusd,
                                         monthly_spend_microusd,
@@ -187,6 +191,12 @@ Policy replacement requires every field. A positive integer enables the limit;
 `null` disables it. The response is `201` when the gateway policy is first
 created and `200` on replacement. `GET /api/v1/policies` accepts an optional
 `gateway_id` filter.
+
+Model prices are append-only effective-dated records. `GET /api/v1/model-prices`
+accepts optional exact `provider` and `model` filters. Creating a second record for
+the same provider, model, and effective timestamp returns `409`; historical prices
+are not overwritten or deleted through the initial control API. Prices use integer
+micro-USD per one million tokens, and `effective_from` must include a timezone.
 
 Audit-event APIs remain proposed. The initial operator key has organization-wide
 authority; fine-grained users and roles remain a later control-plane decision.

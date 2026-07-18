@@ -120,6 +120,7 @@ POST /api/v1/gateways
 POST /api/v1/application-keys
 POST /api/v1/provider-credentials
 POST /api/v1/routes
+POST /api/v1/model-prices
 PUT  /api/v1/policies/{gateway_id}
 Authorization: Bearer <operator key>
 ```
