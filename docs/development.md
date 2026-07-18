@@ -86,3 +86,23 @@ returns Dayboard to the single-tenant canary.
 - Confirmed the console returned HTTP 200, its bundle contained the tenant view,
   and Dayboard still received HTTP 200 from Northgate readiness over the shared
   platform network.
+
+### 2026-07-18: Effective model price management
+
+- Added append-only model price list/create control APIs and a React console price
+  form in commit `d8427b1`. The form accepts dollars per one million tokens and the
+  API stores integer micro-USD with a timezone-qualified effective timestamp.
+- Ran Ruff lint and format checks, the focused control-price and integer-cost tests,
+  the console TypeScript check, and the console production build successfully.
+- Rebuilt and replaced only the Northgate application container. The deployed list
+  endpoint rejected an unauthenticated request with HTTP 401 and returned the one
+  existing `gpt-test` record to an operator with all price fields present.
+- Confirmed a validation-only create request without a timezone returned HTTP 422
+  and left the production table at one record.
+- Confirmed the console and its pricing bundle were available, Dayboard still
+  received HTTP 200 from Northgate readiness, and Northgate logged no deployment
+  errors.
+- Did not add a price for Dayboard's `gpt-5.4-mini`: its five recorded requests have
+  no matched price, and an authoritative exact price could not be retrieved during
+  this deployment. Operators must record the supplier or contract price before
+  treating cost analytics as complete or enabling spend limits.
