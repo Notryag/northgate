@@ -66,3 +66,23 @@ The pre-full-rollout environment backup is stored at
 `/var/backups/dayboard/config/dayboard-env-pre-full-northgate-20260718T023133Z.env`
 with a verified root-only checksum. Restoring it and recreating only API and worker
 returns Dayboard to the single-tenant canary.
+
+### 2026-07-18: Tenant usage analytics
+
+- Added operator-only tenant aggregates and the React console tenant table in
+  commit `7fc90cb`.
+- Ran Ruff lint and format checks for the affected backend files and the focused
+  tenant analytics test; the test passed, including operator authorization and
+  omission of user/run metadata.
+- Ran the console TypeScript check and production build successfully. No browser
+  screenshots were created.
+- Executed the SQLAlchemy tenant aggregation against the production PostgreSQL
+  schema before deployment; all 19 historical records were classified as
+  succeeded with no in-flight or error records.
+- Rebuilt and replaced only the Northgate application container. The deployed
+  endpoint rejected an unauthenticated request with HTTP 401 and returned, for its
+  default 24-hour range, six successful requests across three groups, including two
+  attributed tenant groups, with no errors or in-flight records.
+- Confirmed the console returned HTTP 200, its bundle contained the tenant view,
+  and Dayboard still received HTTP 200 from Northgate readiness over the shared
+  platform network.
