@@ -79,8 +79,9 @@ Limits:
 
 The current implementation forwards chunks without whole-response buffering,
 closes the upstream response on client disconnect, and extracts reported usage
-from JSON responses and terminal SSE events. Durable settlement is enabled with
-`NORTHGATE_USAGE_PERSISTENCE_ENABLED`.
+from JSON responses and LF- or CRLF-delimited terminal SSE events. It records
+provider-reported cached prompt tokens separately from total prompt tokens.
+Durable settlement is enabled with `NORTHGATE_USAGE_PERSISTENCE_ENABLED`.
 
 ## Response headers
 
@@ -143,6 +144,13 @@ project, and gateway filters as the other aggregate usage APIs.
 `/api/v1/usage/requests/{request_id}/attempts` exposes the ordered provider
 attempt ledger to operators. Retry and fallback happen only before downstream
 response headers are sent; mid-stream failures terminate the stream.
+
+`/api/v1/usage/requests` accepts `metadata_key`, `metadata_value`, and an optional
+time range. It returns the matching request records with admission estimates,
+actual tokens, cached prompt tokens, exact-cache status, outcome, and stable error
+code. This operator-only endpoint is the generic correlation surface for an
+application run or another authenticated metadata dimension. It does not return
+prompt or response content.
 
 ## Implemented control-plane resources
 

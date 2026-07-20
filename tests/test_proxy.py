@@ -1,6 +1,8 @@
 import asyncio
 import os
 from hashlib import sha256
+from types import SimpleNamespace
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -12,6 +14,7 @@ from redis.exceptions import RedisError
 
 from northgate.app import create_app
 from northgate.config import Settings
+from northgate.policy import PolicyRejectedError
 from northgate.route_health import RouteHealthDecision
 
 APPLICATION_KEY = "ng_test_application"
@@ -32,6 +35,53 @@ def _settings(**overrides: object) -> Settings:
 
 def _authorization() -> dict[str, str]:
     return {"Authorization": f"Bearer {APPLICATION_KEY}"}
+
+
+@pytest.mark.anyio
+async def test_policy_rejection_records_estimate_and_error_code() -> None:
+    class Recorder:
+        def __init__(self) -> None:
+            self.rejection: dict | None = None
+
+        async def record_rejection(self, **kwargs: object) -> None:
+            self.rejection = kwargs
+
+    class RejectingPolicy:
+        async def admit(self, **_: object):
+            raise PolicyRejectedError(
+                "TOKEN_LIMIT_EXCEEDED",
+                "Token limit exceeded",
+                {"Northgate-TokenLimit-Remaining": "1"},
+            )
+
+    called = False
+
+    async def upstream(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200)
+
+    recorder = Recorder()
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(token_limit_per_day=10),
+        upstream_client=upstream_client,
+    )
+    app.state.usage_recorder = recorder
+    app.state.policy_engine = RejectingPolicy()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH,
+            json={"model": "gpt-test"},
+            headers=_authorization(),
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 429
+    assert called is False
+    assert recorder.rejection is not None
+    assert recorder.rejection["error_code"] == "TOKEN_LIMIT_EXCEEDED"
+    assert recorder.rejection["estimated_tokens"] > 4096
 
 
 @pytest.mark.anyio
@@ -536,6 +586,17 @@ class DisconnectStream(httpx.AsyncByteStream):
         self.closed.set()
 
 
+class TerminalThenHangStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield (
+            b'data: {"usage":{"prompt_tokens":9,"completion_tokens":1,'
+            b'"total_tokens":10,"prompt_tokens_details":{"cached_tokens":8}}}'
+            b"\r\n\r\n"
+        )
+        yield b"data: [DONE]\r\n\r\n"
+        await asyncio.Event().wait()
+
+
 @pytest.mark.anyio
 async def test_streaming_sends_first_chunk_before_upstream_finishes() -> None:
     release_second_chunk = asyncio.Event()
@@ -652,6 +713,101 @@ async def test_client_disconnect_closes_upstream_stream() -> None:
     await asyncio.wait_for(task, timeout=1)
     await asyncio.wait_for(stream.closed.wait(), timeout=1)
     await upstream_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_disconnect_after_terminal_event_settles_actual_usage() -> None:
+    disconnect = asyncio.Event()
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.request: dict | None = None
+            self.attempt: dict | None = None
+
+        async def start(self, **_: object) -> None:
+            return None
+
+        async def start_attempt(self, **_: object):
+            return uuid4()
+
+        async def settle_attempt(self, **kwargs: object) -> None:
+            self.attempt = kwargs
+
+        async def settle(self, **kwargs: object) -> None:
+            self.request = kwargs
+
+    class Policy:
+        def __init__(self) -> None:
+            self.actual_tokens: int | None = None
+
+        async def admit(self, **_: object):
+            return SimpleNamespace(headers={})
+
+        async def settle(self, _lease, actual_tokens, _actual_cost) -> None:
+            self.actual_tokens = actual_tokens
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        await request.aread()
+        return httpx.Response(
+            200,
+            stream=TerminalThenHangStream(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    recorder = Recorder()
+    policy = Policy()
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(token_limit_per_day=60_000),
+        upstream_client=upstream_client,
+    )
+    app.state.usage_recorder = recorder
+    app.state.policy_engine = policy
+    request_received = False
+
+    async def receive() -> dict:
+        nonlocal request_received
+        if not request_received:
+            request_received = True
+            return {
+                "type": "http.request",
+                "body": b'{"model":"gpt-test","stream":true}',
+                "more_body": False,
+            }
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.body" and b"[DONE]" in message.get("body", b""):
+            disconnect.set()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": PROXY_PATH,
+        "raw_path": PROXY_PATH.encode(),
+        "query_string": b"",
+        "headers": [
+            (b"host", b"test"),
+            (b"authorization", f"Bearer {APPLICATION_KEY}".encode()),
+            (b"content-type", b"application/json"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+    }
+
+    await asyncio.wait_for(app(scope, receive, send), timeout=1)
+    await upstream_client.aclose()
+
+    assert recorder.attempt is not None
+    assert recorder.attempt["outcome"] == "succeeded"
+    assert recorder.attempt["usage"].cached_prompt_tokens == 8
+    assert recorder.request is not None
+    assert recorder.request["outcome"] == "succeeded"
+    assert policy.actual_tokens == 10
 
 
 @pytest.fixture

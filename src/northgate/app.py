@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 from northgate import __version__
 from northgate.analytics import (
     usage_attempts,
+    usage_requests,
     usage_routes,
     usage_summary,
     usage_tenants,
@@ -183,6 +184,7 @@ def create_app(
     app.add_api_route("/api/v1/usage/timeseries", usage_timeseries, methods=["GET"])
     app.add_api_route("/api/v1/usage/routes", usage_routes, methods=["GET"])
     app.add_api_route("/api/v1/usage/tenants", usage_tenants, methods=["GET"])
+    app.add_api_route("/api/v1/usage/requests", usage_requests, methods=["GET"])
     app.add_api_route(
         "/api/v1/usage/requests/{request_id}/attempts",
         usage_attempts,

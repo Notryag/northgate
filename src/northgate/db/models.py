@@ -164,6 +164,10 @@ class RequestRecord(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     total_tokens: Mapped[int | None] = mapped_column(Integer)
+    cached_prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    estimated_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_status: Mapped[str | None] = mapped_column(String(20))
+    error_code: Mapped[str | None] = mapped_column(String(80))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     first_token_ms: Mapped[int | None] = mapped_column(Integer)
     started_at: Mapped[datetime] = mapped_column(
@@ -192,6 +196,7 @@ class ProviderAttemptRecord(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     total_tokens: Mapped[int | None] = mapped_column(Integer)
+    cached_prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     started_at: Mapped[datetime] = mapped_column(

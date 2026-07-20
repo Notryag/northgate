@@ -200,6 +200,7 @@ class AttemptTotals:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_prompt_tokens: int = 0
     cost_microusd: int = 0
     has_usage: bool = False
     has_cost: bool = False
@@ -210,6 +211,7 @@ class AttemptTotals:
             self.prompt_tokens += usage.prompt_tokens or 0
             self.completion_tokens += usage.completion_tokens or 0
             self.total_tokens += usage.total_tokens
+            self.cached_prompt_tokens += usage.cached_prompt_tokens or 0
             self.has_usage = True
         if cost_microusd is not None:
             self.cost_microusd += cost_microusd
@@ -222,7 +224,16 @@ class AttemptTotals:
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
             total_tokens=self.total_tokens,
+            cached_prompt_tokens=self.cached_prompt_tokens,
         )
+
+
+async def _finish_during_cancellation(awaitable) -> None:
+    task = asyncio.create_task(awaitable)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
 
 
 async def _settle_attempt_safely(
@@ -247,6 +258,7 @@ async def _settle_attempt_safely(
             duration_seconds=duration_seconds,
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
+            cached_prompt_tokens=usage.cached_prompt_tokens,
             cost_microusd=cost_microusd,
         )
     add_span_event(
@@ -258,6 +270,7 @@ async def _settle_attempt_safely(
             "northgate.attempt.duration_ms": round(duration_seconds * 1000, 2),
             "northgate.usage.prompt_tokens": usage.prompt_tokens,
             "northgate.usage.completion_tokens": usage.completion_tokens,
+            "northgate.usage.cached_prompt_tokens": usage.cached_prompt_tokens,
             "northgate.cost_microusd": cost_microusd,
             "http.response.status_code": status_code,
         },
@@ -381,8 +394,11 @@ async def _response_body(
             yield chunk
         completed = True
     except asyncio.CancelledError:
-        outcome = "client_disconnected"
-        totals.ambiguous = True
+        if accumulator.terminal_event_seen:
+            outcome = "succeeded" if response.status_code < 400 else "provider_error"
+            completed = True
+        else:
+            outcome = "client_disconnected"
         raise
     except httpx.TransportError:
         outcome = "provider_error"
@@ -446,28 +462,32 @@ async def _response_body(
                     northgate_request_id=request_id,
                 )
         usage = accumulator.result()
+        if outcome == "client_disconnected" and usage.total_tokens is None:
+            totals.ambiguous = True
         cost_microusd = (
             price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
             if price is not None
             else None
         )
         totals.add(usage, cost_microusd)
-        await _settle_attempt_safely(
-            recorder,
-            metrics=metrics,
-            route=route,
-            attempt_id=attempt_id,
-            outcome=outcome,
-            status_code=response.status_code,
-            provider_request_id=response.headers.get("x-request-id"),
-            started_at=attempt_started_at,
-            usage=usage,
-            cost_microusd=cost_microusd,
+        await _finish_during_cancellation(
+            _settle_attempt_safely(
+                recorder,
+                metrics=metrics,
+                route=route,
+                attempt_id=attempt_id,
+                outcome=outcome,
+                status_code=response.status_code,
+                provider_request_id=response.headers.get("x-request-id"),
+                started_at=attempt_started_at,
+                usage=usage,
+                cost_microusd=cost_microusd,
+            )
         )
         aggregate_usage = totals.usage()
         aggregate_cost = totals.cost_microusd if totals.has_cost else None
         if recorder is not None:
-            settlement = asyncio.create_task(
+            await _finish_during_cancellation(
                 _settle_safely(
                     recorder,
                     request_id=request_id,
@@ -482,22 +502,14 @@ async def _response_body(
                     price_id=price.price_id if price is not None else None,
                 )
             )
-            try:
-                await asyncio.shield(settlement)
-            except asyncio.CancelledError:
-                pass
         if policy_engine is not None and policy_lease is not None:
-            settlement = asyncio.create_task(
+            await _finish_during_cancellation(
                 policy_engine.settle(
                     policy_lease,
                     None if totals.ambiguous else aggregate_usage.total_tokens,
                     None if totals.ambiguous else aggregate_cost,
                 )
             )
-            try:
-                await asyncio.shield(settlement)
-            except asyncio.CancelledError:
-                pass
 
 
 def _request_model(body: bytes) -> str | None:
@@ -753,6 +765,8 @@ async def proxy_chat_completions(
                     model=model,
                     request_metadata=request_metadata,
                     price_id=None,
+                    estimated_tokens=0,
+                    cache_status="hit",
                 )
             except DuplicateRequestError:
                 if policy_engine is not None and cache_policy_lease is not None:
@@ -846,15 +860,37 @@ async def proxy_chat_completions(
                 retryable=True,
             )
         try:
+            estimated_tokens = (
+                estimated_input_tokens + estimated_output_tokens
+            ) * possible_attempts
             policy_lease = await policy_engine.admit(
                 gateway_key=str(route.gateway_id or gateway_slug),
                 request_id=request_id,
                 limits=route.policy,
-                estimated_tokens=(estimated_input_tokens + estimated_output_tokens)
-                * possible_attempts,
+                estimated_tokens=estimated_tokens,
                 estimated_cost_microusd=estimated_cost_microusd,
             )
         except PolicyRejectedError as exc:
+            if recorder is not None:
+                try:
+                    await recorder.record_rejection(
+                        request_id=request_id,
+                        route=route,
+                        model=model,
+                        request_metadata=request_metadata,
+                        price_id=prices[0].price_id if prices[0] is not None else None,
+                        estimated_tokens=estimated_tokens,
+                        cache_status=cache_result,
+                        error_code=exc.code,
+                        status_code=429,
+                    )
+                except DuplicateRequestError:
+                    pass
+                except Exception:
+                    await logger.aexception(
+                        "policy_rejection_record_failed",
+                        northgate_request_id=request_id,
+                    )
             return _error(
                 request,
                 status_code=429,
@@ -881,6 +917,9 @@ async def proxy_chat_completions(
                 model=model,
                 request_metadata=request_metadata,
                 price_id=price.price_id if price is not None else None,
+                estimated_tokens=(estimated_input_tokens + estimated_output_tokens)
+                * possible_attempts,
+                cache_status=cache_result,
             )
         except DuplicateRequestError:
             if policy_engine is not None and policy_lease is not None:

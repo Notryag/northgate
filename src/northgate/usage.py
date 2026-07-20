@@ -24,6 +24,7 @@ class UsageResult:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    cached_prompt_tokens: int | None = None
 
 
 class UsageAccumulator:
@@ -33,6 +34,7 @@ class UsageAccumulator:
         self.is_sse = content_type.startswith("text/event-stream")
         self.started_at = started_at
         self.first_token_ms: int | None = None
+        self.terminal_event_seen = False
         self._buffer = bytearray()
         self._usage = UsageResult()
 
@@ -53,13 +55,24 @@ class UsageAccumulator:
         return self._usage
 
     def _consume_sse_events(self) -> None:
-        while b"\n\n" in self._buffer:
-            event, remainder = self._buffer.split(b"\n\n", 1)
+        while True:
+            separators = [
+                (index, separator)
+                for separator in (b"\r\n\r\n", b"\n\n")
+                if (index := self._buffer.find(separator)) >= 0
+            ]
+            if not separators:
+                return
+            index, separator = min(separators, key=lambda item: item[0])
+            event = bytes(self._buffer[:index])
+            remainder = self._buffer[index + len(separator) :]
             self._buffer = bytearray(remainder)
             data = b"\n".join(
                 line[5:].lstrip() for line in event.splitlines() if line.startswith(b"data:")
             )
-            if data and data != b"[DONE]":
+            if data == b"[DONE]":
+                self.terminal_event_seen = True
+            elif data:
                 self._read_payload(data)
 
     def _read_payload(self, payload: bytes) -> None:
@@ -70,10 +83,17 @@ class UsageAccumulator:
         usage = data.get("usage")
         if not isinstance(usage, dict):
             return
+        prompt_details = usage.get("prompt_tokens_details", usage.get("input_tokens_details"))
+        cached_prompt_tokens = None
+        if isinstance(prompt_details, dict):
+            cached_prompt_tokens = _integer(
+                prompt_details.get("cached_tokens", prompt_details.get("cache_read"))
+            )
         self._usage = UsageResult(
             prompt_tokens=_integer(usage.get("prompt_tokens", usage.get("input_tokens"))),
             completion_tokens=_integer(usage.get("completion_tokens", usage.get("output_tokens"))),
             total_tokens=_integer(usage.get("total_tokens")),
+            cached_prompt_tokens=cached_prompt_tokens,
         )
 
 
@@ -93,6 +113,8 @@ class UsageRecorder:
         model: str | None,
         request_metadata: dict[str, str],
         price_id: UUID | None,
+        estimated_tokens: int,
+        cache_status: str,
     ) -> None:
         async with self.database.sessions() as session:
             session.add(
@@ -105,7 +127,48 @@ class UsageRecorder:
                     model=model,
                     request_metadata=request_metadata or None,
                     price_id=price_id,
+                    estimated_tokens=estimated_tokens,
+                    cache_status=cache_status,
                     outcome="started",
+                )
+            )
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                raise DuplicateRequestError from exc
+
+    async def record_rejection(
+        self,
+        *,
+        request_id: str,
+        route: ResolvedRoute,
+        model: str | None,
+        request_metadata: dict[str, str],
+        price_id: UUID | None,
+        estimated_tokens: int,
+        cache_status: str,
+        error_code: str,
+        status_code: int,
+    ) -> None:
+        async with self.database.sessions() as session:
+            session.add(
+                RequestRecord(
+                    request_id=request_id,
+                    project_id=route.project_id,
+                    gateway_id=route.gateway_id,
+                    route_id=route.route_id,
+                    provider=route.provider,
+                    model=model,
+                    request_metadata=request_metadata or None,
+                    price_id=price_id,
+                    estimated_tokens=estimated_tokens,
+                    cache_status=cache_status,
+                    error_code=error_code,
+                    outcome="policy_rejected",
+                    http_status=status_code,
+                    latency_ms=0,
+                    completed_at=datetime.now(UTC),
                 )
             )
             try:
@@ -142,6 +205,7 @@ class UsageRecorder:
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
                     total_tokens=usage.total_tokens,
+                    cached_prompt_tokens=usage.cached_prompt_tokens,
                     cost_microusd=cost_microusd,
                     route_id=final_route.route_id,
                     provider=final_route.provider,
@@ -199,6 +263,7 @@ class UsageRecorder:
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
                     total_tokens=usage.total_tokens,
+                    cached_prompt_tokens=usage.cached_prompt_tokens,
                     cost_microusd=cost_microusd,
                     latency_ms=latency_ms,
                     completed_at=datetime.now(UTC),

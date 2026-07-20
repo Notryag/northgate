@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
@@ -11,6 +12,7 @@ from northgate.db.models import ProviderAttemptRecord, RequestRecord, Route
 from northgate.operator_auth import authorize_operator
 
 _MAX_RANGE = timedelta(days=90)
+_METADATA_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 def _range(start: datetime | None, end: datetime | None) -> tuple[datetime, datetime] | None:
@@ -373,6 +375,7 @@ async def usage_attempts(request: Request, request_id: str) -> Response:
                     "prompt_tokens": attempt.prompt_tokens,
                     "completion_tokens": attempt.completion_tokens,
                     "total_tokens": attempt.total_tokens,
+                    "cached_prompt_tokens": attempt.cached_prompt_tokens,
                     "cost_microusd": attempt.cost_microusd,
                     "latency_ms": attempt.latency_ms,
                     "started_at": attempt.started_at.isoformat(),
@@ -381,6 +384,78 @@ async def usage_attempts(request: Request, request_id: str) -> Response:
                     else None,
                 }
                 for attempt in attempts
+            ],
+        }
+    )
+
+
+async def usage_requests(
+    request: Request,
+    metadata_key: str,
+    metadata_value: str,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Response:
+    authorization_error = authorize_operator(request)
+    if authorization_error is not None:
+        return authorization_error
+    if not _METADATA_KEY.fullmatch(metadata_key) or not 1 <= len(metadata_value) <= 256:
+        return JSONResponse(
+            {"error": {"code": "INVALID_METADATA_FILTER", "message": "Invalid metadata filter"}},
+            status_code=400,
+        )
+    selected_range = _range(start, end)
+    if selected_range is None:
+        return JSONResponse(
+            {"error": {"code": "INVALID_TIME_RANGE", "message": "Invalid time range"}},
+            status_code=400,
+        )
+    database = _database(request)
+    if database is None:
+        return JSONResponse(
+            {"error": {"code": "ANALYTICS_UNAVAILABLE", "message": "Analytics unavailable"}},
+            status_code=503,
+        )
+
+    resolved_start, resolved_end = selected_range
+    statement = (
+        select(RequestRecord)
+        .where(
+            RequestRecord.started_at >= resolved_start,
+            RequestRecord.started_at < resolved_end,
+            RequestRecord.request_metadata[metadata_key].as_string() == metadata_value,
+        )
+        .order_by(RequestRecord.started_at)
+    )
+    async with database.sessions() as session:
+        records = (await session.scalars(statement)).all()
+    return JSONResponse(
+        {
+            "start": resolved_start.isoformat(),
+            "end": resolved_end.isoformat(),
+            "metadata_key": metadata_key,
+            "metadata_value": metadata_value,
+            "requests": [
+                {
+                    "request_id": record.request_id,
+                    "model": record.model,
+                    "provider": record.provider,
+                    "outcome": record.outcome,
+                    "http_status": record.http_status,
+                    "error_code": record.error_code,
+                    "estimated_tokens": record.estimated_tokens,
+                    "prompt_tokens": record.prompt_tokens,
+                    "completion_tokens": record.completion_tokens,
+                    "total_tokens": record.total_tokens,
+                    "cached_prompt_tokens": record.cached_prompt_tokens,
+                    "cache_status": record.cache_status,
+                    "latency_ms": record.latency_ms,
+                    "started_at": record.started_at.isoformat(),
+                    "completed_at": record.completed_at.isoformat()
+                    if record.completed_at
+                    else None,
+                }
+                for record in records
             ],
         }
     )

@@ -125,6 +125,7 @@ class Metrics:
         duration_seconds: float,
         prompt_tokens: int | None,
         completion_tokens: int | None,
+        cached_prompt_tokens: int | None,
         cost_microusd: int | None,
     ) -> None:
         self.provider_attempts.labels(
@@ -143,6 +144,10 @@ class Metrics:
             self.provider_tokens.labels(provider=provider, adapter=adapter, type="completion").inc(
                 completion_tokens
             )
+        if cached_prompt_tokens is not None and cached_prompt_tokens >= 0:
+            self.provider_tokens.labels(
+                provider=provider, adapter=adapter, type="cached_prompt"
+            ).inc(cached_prompt_tokens)
         if cost_microusd is not None and cost_microusd >= 0:
             self.provider_cost_microusd.labels(provider=provider, adapter=adapter).inc(
                 cost_microusd

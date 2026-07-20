@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from hashlib import sha256
 from types import SimpleNamespace
 
@@ -45,6 +46,31 @@ class _Database:
     @asynccontextmanager
     async def sessions(self):
         yield _Session()
+
+
+class _ScalarResult:
+    def __init__(self, records: list[SimpleNamespace]) -> None:
+        self.records = records
+
+    def all(self) -> list[SimpleNamespace]:
+        return self.records
+
+
+class _RequestSession:
+    def __init__(self, records: list[SimpleNamespace]) -> None:
+        self.records = records
+
+    async def scalars(self, _statement) -> _ScalarResult:
+        return _ScalarResult(self.records)
+
+
+class _RequestDatabase:
+    def __init__(self, records: list[SimpleNamespace]) -> None:
+        self.records = records
+
+    @asynccontextmanager
+    async def sessions(self):
+        yield _RequestSession(self.records)
 
 
 @pytest.mark.anyio
@@ -106,6 +132,73 @@ async def test_tenant_usage_returns_aggregates_without_user_or_run_metadata() ->
     ]
     assert "user_id" not in response.text
     assert "run_id" not in response.text
+
+
+@pytest.mark.anyio
+async def test_request_diagnostics_filter_by_metadata() -> None:
+    operator_key = "operator-test"
+    now = datetime.now(UTC)
+    record = SimpleNamespace(
+        request_id="req-test",
+        model="gpt-test",
+        provider="openai",
+        outcome="succeeded",
+        http_status=200,
+        error_code=None,
+        estimated_tokens=120,
+        prompt_tokens=70,
+        completion_tokens=5,
+        total_tokens=75,
+        cached_prompt_tokens=60,
+        cache_status="bypass",
+        latency_ms=42,
+        started_at=now,
+        completed_at=now,
+    )
+    app = create_app(
+        Settings(
+            environment="test",
+            operator_key_sha256=SecretStr(sha256(operator_key.encode()).hexdigest()),
+            routing_source="configuration",
+            usage_persistence_enabled=False,
+            request_limit_per_minute=None,
+            concurrency_limit=None,
+            token_limit_per_day=None,
+            daily_spend_limit_microusd=None,
+            monthly_spend_limit_microusd=None,
+            exact_cache_ttl_seconds=None,
+            route_health_enabled=False,
+        )
+    )
+    app.state.database = _RequestDatabase([record])
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/usage/requests",
+            params={"metadata_key": "run_id", "metadata_value": "run-test"},
+            headers={"Authorization": f"Bearer {operator_key}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["requests"] == [
+        {
+            "request_id": "req-test",
+            "model": "gpt-test",
+            "provider": "openai",
+            "outcome": "succeeded",
+            "http_status": 200,
+            "error_code": None,
+            "estimated_tokens": 120,
+            "prompt_tokens": 70,
+            "completion_tokens": 5,
+            "total_tokens": 75,
+            "cached_prompt_tokens": 60,
+            "cache_status": "bypass",
+            "latency_ms": 42,
+            "started_at": now.isoformat(),
+            "completed_at": now.isoformat(),
+        }
+    ]
 
 
 @pytest.fixture

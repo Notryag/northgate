@@ -50,7 +50,8 @@ separate so they can be scaled independently later.
 4. Reserve request, concurrency, estimated token, and spend capacity.
 5. Select a route from accepted configuration.
 6. Forward the provider-native request and preserve streaming semantics.
-7. Capture status, first-token latency, total latency, provider request ID, and usage.
+7. Capture status, first-token latency, total latency, provider request ID, exact-cache result,
+   provider-reported usage, and provider-reported cached prompt tokens.
 8. Settle actual token and cost usage exactly once.
 9. Release concurrency capacity and persist the terminal request record.
 10. Emit metrics and traces without credentials or content by default.
@@ -72,6 +73,12 @@ Usage writes should be append-oriented and idempotent by request ID.
 - Analytics or console unavailable: proxy traffic continues when configuration is already available.
 - Provider unavailable: apply only configured retries or fallback routes.
 - Client disconnect: cancel upstream work when supported, then settle any reported usage.
+
+SSE parsing accepts both LF and CRLF event separators. Observing a terminal
+`[DONE]` event establishes provider-stream completion even when the downstream
+client closes before the upstream socket reaches EOF. Settlement work is
+shielded from that downstream cancellation. A disconnect without terminal usage
+remains conservative and retains its reservation rather than inventing usage.
 
 ## Security invariants
 

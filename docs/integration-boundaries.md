@@ -71,4 +71,12 @@ Sharing infrastructure does not permit sharing application tables or secrets.
 7. Make Northgate analytics authoritative after discrepancies are understood.
 
 Rollback consists of restoring Dayboard's previous provider base URL and key.
-The integration is canary-ready; production traffic has not been declared migrated.
+Both current production Dayboard tenants select the Northgate connection. The
+previous direct provider connection remains configured only as an explicit
+rollback path.
+
+Northgate operator diagnostics may correlate Dayboard traffic by authenticated
+`run_id` metadata. The generic request diagnostics expose gateway reservation,
+actual usage, provider cached prompt usage, exact-cache status, and terminal
+outcome. Dayboard-specific interpretation stays in Dayboard documentation and
+does not enter Northgate's data model.
