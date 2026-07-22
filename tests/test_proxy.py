@@ -765,9 +765,11 @@ async def test_disconnect_after_terminal_event_settles_actual_usage() -> None:
             return uuid4()
 
         async def settle_attempt(self, **kwargs: object) -> None:
+            await asyncio.sleep(0.01)
             self.attempt = kwargs
 
         async def settle(self, **kwargs: object) -> None:
+            await asyncio.sleep(0.01)
             self.request = kwargs
 
     class Policy:
@@ -778,6 +780,7 @@ async def test_disconnect_after_terminal_event_settles_actual_usage() -> None:
             return SimpleNamespace(headers={})
 
         async def settle(self, _lease, actual_tokens, _actual_cost) -> None:
+            await asyncio.sleep(0.01)
             self.actual_tokens = actual_tokens
 
     async def upstream(request: httpx.Request) -> httpx.Response:

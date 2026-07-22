@@ -11,6 +11,7 @@ from uuid import UUID
 
 import httpx
 import structlog
+from anyio import CancelScope
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -229,11 +230,8 @@ class AttemptTotals:
 
 
 async def _finish_during_cancellation(awaitable) -> None:
-    task = asyncio.create_task(awaitable)
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
+    with CancelScope(shield=True):
+        await awaitable
 
 
 async def _settle_attempt_safely(
