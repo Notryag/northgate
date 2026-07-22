@@ -157,7 +157,7 @@ async def test_settlement_outbox_recovers_partial_policy_failure() -> None:
         assert retry_event_id != event_id
         assert await coordinator.process(retry_event_id) is True
         assert await coordinator.enqueue(request_id=request_id, payload=payload) == event_id
-        assert await coordinator.process(event_id) is True
+        assert await coordinator.process(event_id) is False
 
         async with database.sessions() as session:
             event = await session.get(SettlementEvent, event_id)

@@ -80,7 +80,7 @@ class SettlementCoordinator:
         return await self.process()
 
     async def process(self, event_id: UUID | None = None) -> bool:
-        """Process one available event, optionally selecting an exact event."""
+        """Process one event and report whether every settlement stage completed."""
 
         event = await self._claim(event_id)
         if event is None:
@@ -98,6 +98,7 @@ class SettlementCoordinator:
                 settlement_event_id=str(event.id),
                 request_id=event.request_id,
             )
+            return False
         return True
 
     async def _claim(self, event_id: UUID | None = None) -> SettlementEvent | None:

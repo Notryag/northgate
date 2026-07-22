@@ -45,7 +45,7 @@ Closure criteria:
 
 ## Streaming lifecycle and concurrency settlement
 
-Status: regressed in production on 2026-07-22; fix and redeployment required
+Status: regression fixed in code on 2026-07-22; redeployment and production verification required
 
 ### Impact
 
@@ -179,24 +179,17 @@ Implemented on 2026-07-22:
   and that a Redis settlement retry recovers across Northgate recreation.
 - `northgate_settlement_worker_available` and the deployable alert rule expose
   worker heartbeat loss independently of HTTP readiness.
+- Exhausted retryable provider `5xx` responses are now drained and settled before
+  Northgate returns its stable `PROVIDER_UNAVAILABLE` response. Final provider
+  `429` responses remain provider-native and distinguishable from Northgate
+  policy rejection.
+- A concurrency-limit-one regression test sends two consecutive requests, each
+  receiving two upstream `502` responses. It verifies that request and attempt
+  records leave `started` and the Redis lease is released before the second
+  request, both for inline settlement and when the first outbox process fails.
 
 Still required:
 
-- Fix exhausted retryable server responses (`5xx`) so the final provider body is
-  consumed and the provider attempt, request record, and policy lease are settled
-  before Northgate returns its stable `PROVIDER_UNAVAILABLE` response. Preserve a
-  provider-native final `429` response so it remains distinguishable from a
-  Northgate policy rejection.
-- Implementation handoff: keep the final retryable response on the same
-  lifecycle path as every other terminal outcome. The response body must be
-  drained or explicitly closed, the provider attempt must receive a terminal
-  status, the request record must leave `started`, and the policy lease must be
-  released before the HTTP response is observable by the caller. Do not rely on
-  background task cleanup or on a later request to trigger reconciliation.
-- Add a regression test with concurrency limit one and two consecutive upstream
-  `502` responses. It must prove the first request has no `started` records or
-  active lease before a second request is admitted immediately. Cover both inline
-  settlement and settlement-outbox mode, including a failing first outbox process.
 - Require and monitor the healthy settlement-worker profile in every production
   deployment that enables the outbox. Generic Compose exposes the profile, but
   `validate-compose-topology.sh` now rejects an outbox-enabled merged config that

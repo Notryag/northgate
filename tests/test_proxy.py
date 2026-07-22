@@ -486,6 +486,7 @@ async def test_gateway_concurrency_rejection_is_distinct_from_provider_throttlin
         gateway_response = await client.post(PROXY_PATH, json={}, headers=_authorization())
         gateway_metrics = await client.get("/metrics")
     await gateway_client.aclose()
+    await gateway_app.state.redis.aclose()
 
     assert provider_response.status_code == 429
     assert provider_response.json()["error"]["type"] == "provider_rate_limit"
@@ -540,6 +541,100 @@ async def test_retryable_status_falls_back_to_next_provider() -> None:
         ("provider.test", f"Bearer {PROVIDER_KEY}"),
         ("fallback.test", "Bearer fallback-secret"),
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outbox_process_fails", [False, True])
+async def test_exhausted_server_retries_settle_before_next_request(
+    outbox_process_fails: bool,
+) -> None:
+    redis = Redis.from_url(
+        os.environ.get("NORTHGATE_TEST_CACHE_REDIS_URL", "redis://127.0.0.1:6379/14")
+    )
+    try:
+        await redis.ping()
+    except RedisError:
+        await redis.aclose()
+        pytest.skip("Redis is not available")
+
+    gateway_slug = f"retry-exhausted-{uuid4().hex[:12]}"
+    path = f"/v1/gateways/{gateway_slug}/openai/chat/completions"
+    policy_key = f"northgate:policy:{{{gateway_slug}}}:concurrency"
+    request_outcomes: dict[str, str] = {}
+    attempt_outcomes: dict[object, str] = {}
+    calls = 0
+
+    class Recorder:
+        async def start(self, *, request_id: str, **_: object) -> None:
+            request_outcomes[request_id] = "started"
+
+        async def start_attempt(self, **_: object):
+            attempt_id = uuid4()
+            attempt_outcomes[attempt_id] = "started"
+            return attempt_id
+
+        async def settle_attempt(self, *, attempt_id: object, outcome: str, **_: object) -> None:
+            attempt_outcomes[attempt_id] = outcome
+
+        async def settle(self, *, request_id: str, outcome: str, **_: object) -> None:
+            request_outcomes[request_id] = outcome
+
+    class FailingCoordinator:
+        async def enqueue(self, **_: object):
+            return uuid4()
+
+        async def process(self, _event_id: object) -> bool:
+            return False
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await request.aread()
+        return httpx.Response(
+            502,
+            json={
+                "error": {"type": "upstream_bad_gateway"},
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            },
+        )
+
+    await redis.delete(policy_key, f"{policy_key}:started")
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(
+            gateway_slug=gateway_slug,
+            concurrency_limit=1,
+            concurrency_lease_seconds=30,
+            provider_max_retries=1,
+            provider_retry_backoff_ms=0,
+        ),
+        upstream_client=upstream_client,
+        redis=redis,
+    )
+    app.state.usage_recorder = Recorder()
+    if outbox_process_fails:
+        app.state.settlement_coordinator = FailingCoordinator()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            first = await client.post(path, json={"model": "gpt-test"}, headers=_authorization())
+            assert first.status_code == 502
+            assert first.json()["error"]["code"] == "PROVIDER_UNAVAILABLE"
+            assert await redis.zcard(policy_key) == 0
+            assert "started" not in request_outcomes.values()
+            assert "started" not in attempt_outcomes.values()
+
+            second = await client.post(path, json={"model": "gpt-test"}, headers=_authorization())
+
+        assert second.status_code == 502
+        assert second.json()["error"]["code"] == "PROVIDER_UNAVAILABLE"
+        assert calls == 4
+        assert await redis.zcard(policy_key) == 0
+        assert set(request_outcomes.values()) == {"provider_unavailable"}
+        assert set(attempt_outcomes.values()) == {"retryable_status"}
+    finally:
+        await upstream_client.aclose()
+        await redis.delete(policy_key, f"{policy_key}:started")
+        await redis.aclose()
 
 
 @pytest.mark.anyio

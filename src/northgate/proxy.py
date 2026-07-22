@@ -264,8 +264,7 @@ async def _enqueue_request_settlement(
         return False
     if policy_engine is not None and policy_lease is not None:
         await policy_engine.stop_renewal(policy_lease)
-    await coordinator.process(event_id)
-    return True
+    return await coordinator.process(event_id)
 
 
 @dataclass
@@ -422,8 +421,8 @@ async def _settle_attempt_with_outbox(
                 usage=usage,
                 cost_microusd=cost_microusd,
             )
-            await coordinator.process(event_id)
-            return
+            if await coordinator.process(event_id):
+                return
     await _settle_attempt_safely(
         recorder,
         metrics=metrics,
@@ -668,22 +667,22 @@ class StreamFinalization:
                     northgate_request_id=self.request_id,
                 )
             else:
-                await _settle_attempt_safely(
-                    None,
-                    metrics=self.metrics,
-                    route=self.route,
-                    attempt_id=self.attempt_id,
-                    outcome=outcome,
-                    status_code=self.response.status_code,
-                    provider_request_id=self.response.headers.get("x-request-id"),
-                    started_at=self.attempt_started_at,
-                    usage=usage,
-                    cost_microusd=cost_microusd,
-                )
                 if self.policy_engine is not None and self.policy_lease is not None:
                     await self.policy_engine.stop_renewal(self.policy_lease)
-                await self.settlement_coordinator.process(event_id)
-                return
+                if await self.settlement_coordinator.process(event_id):
+                    await _settle_attempt_safely(
+                        None,
+                        metrics=self.metrics,
+                        route=self.route,
+                        attempt_id=self.attempt_id,
+                        outcome=outcome,
+                        status_code=self.response.status_code,
+                        provider_request_id=self.response.headers.get("x-request-id"),
+                        started_at=self.attempt_started_at,
+                        usage=usage,
+                        cost_microusd=cost_microusd,
+                    )
+                    return
         await _settle_attempt_safely(
             self.recorder,
             metrics=self.metrics,
@@ -1491,7 +1490,13 @@ async def proxy_chat_completions(
             except RouteHealthUnavailableError:
                 await logger.aexception("route_health_settlement_failed", route=health_route_key)
         else:
-            if response.status_code in candidate.retry_status_codes and has_next:
+            retryable_status = response.status_code in candidate.retry_status_codes
+            exhausted_retryable_server_error = (
+                retryable_status and not has_next and response.status_code >= 500
+            )
+            if retryable_status and (has_next or exhausted_retryable_server_error):
+                if exhausted_retryable_server_error:
+                    last_failure = "provider_unavailable"
                 try:
                     retry_usage, retry_cost = await _consume_retryable_response(
                         response,
