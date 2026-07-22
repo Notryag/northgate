@@ -30,6 +30,7 @@ dev = [
 [project.scripts]
 northgate = "northgate.main:main"
 northgate-bootstrap = "northgate.bootstrap:main"
+northgate-inspect = "northgate.inspect:main"
 northgate-reconcile = "northgate.reconcile:main"
 northgate-verify = "northgate.verify:main"
 northgate-worker = "northgate.settlement:main"

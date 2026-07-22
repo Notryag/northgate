@@ -20,6 +20,10 @@ settings; README sections describe behavior and safe defaults.
 - Secrets are supplied through a deployment secret manager, not committed
   environment files. Secret values must not appear in logs, metrics, traces, or
   error responses.
+- `northgate-inspect` client settings use the separate `NORTHGATE_INSPECT_*`
+  namespace. Supply its raw operator credential through the environment or a
+  regular `NORTHGATE_INSPECT_OPERATOR_KEY_FILE` with no group/other access; never
+  pass it as a command argument.
 - Release notes must call out new required settings, default changes, and any
   setting that changes request or cost behavior.
 - `NORTHGATE_MAX_REQUEST_BODY_BYTES` bounds buffered proxy request bodies and

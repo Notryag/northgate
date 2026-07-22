@@ -278,8 +278,24 @@ GET /api/v1/usage/summary
 GET /api/v1/usage/timeseries?interval=hour
 GET /api/v1/usage/routes
 GET /api/v1/usage/requests/{request_id}/attempts
+GET /api/v1/diagnostics/requests/{request_id}
+GET /api/v1/diagnostics/correlated?metadata_key=run_id&metadata_value=<run-id>
 Authorization: Bearer <operator key>
 ```
+
+诊断 CLI 只调用 Operator API，不直接连接 PostgreSQL：
+
+```sh
+export NORTHGATE_INSPECT_BASE_URL=http://127.0.0.1:8080
+export NORTHGATE_INSPECT_OPERATOR_KEY=<operator key>
+uv run northgate-inspect run <run-id>
+uv run northgate-inspect request <request-id> --json
+```
+
+也可以通过权限为 `0600` 的文件设置
+`NORTHGATE_INSPECT_OPERATOR_KEY_FILE`，避免把原始 key 放入命令参数。
+退出码 `0` 表示无 finding，`2` 表示存在 finding，`3` 表示鉴权失败，`4`
+表示配置、网络或 Operator API 失败。
 
 React 运维控制台地址：
 

@@ -1,6 +1,6 @@
 # Operator diagnostics interface
 
-Status: shared service and Operator REST implemented; CLI, MCP, stale-policy join, and console open
+Status: shared service, Operator REST, and run/request CLI implemented; MCP, stale-policy join, and console open
 Last reviewed: 2026-07-22
 
 This document defines a read-only diagnostics surface for operators and coding
@@ -108,10 +108,17 @@ northgate-inspect request <request-id> [--json]
 northgate-inspect stale [--minimum-age 5m] [--limit 100] [--json]
 ```
 
-Human output may use tables. `--json` must emit the same versioned diagnostic
-shape used by MCP and use stable exit codes for healthy, findings-present,
-authorization failure, and service failure. The CLI must use Operator APIs, not
-connect directly to PostgreSQL.
+`run` and `request` are implemented. `stale` remains open until the shared
+service joins stale records and relevant Redis lease state. `--json` emits the
+REST response without changing its versioned shape; human output is a compact
+summary. Exit codes are `0` for no findings, `2` for findings present, `3` for
+authorization failure, and `4` for configuration, transport, or service failure.
+The CLI uses Operator APIs and never connects directly to PostgreSQL.
+
+Configure it with `NORTHGATE_INSPECT_BASE_URL` and exactly one of
+`NORTHGATE_INSPECT_OPERATOR_KEY` or `NORTHGATE_INSPECT_OPERATOR_KEY_FILE`. Key
+files must be regular, no larger than 4 KiB, and inaccessible to group and other
+users. The raw key is never accepted as a command argument.
 
 ## Security and operational constraints
 
@@ -175,8 +182,9 @@ assuming every ledger record is complete.
    and bounded correlated request sets.
 4. Add the independently deployable read-only MCP adapter over the same API as
    the primary coding-agent interface.
-5. Add `northgate-inspect` as a thin REST client with JSON output for humans, CI,
-   and recovery environments.
+5. Partially completed on 2026-07-22: `northgate-inspect run` and `request` are a
+   thin REST client with JSON and human output for operators, CI, and recovery
+   environments. Add `stale` after the shared stale-policy diagnostic exists.
 6. Add a correlated-request view to the console after the machine interface is
    stable.
 
