@@ -15,7 +15,7 @@ The broader sequencing and accepted tradeoffs are recorded in the
 | Area | What remains | Where completion is defined |
 | --- | --- | --- |
 | Metadata trust | Replace legacy keys, add signed dynamic values with replay bounds, and audit fixed-value changes | Metadata section below |
-| Settlement incident closure | Connect production alerts and complete the production-like soak criteria after deployment | Streaming lifecycle section below |
+| Settlement incident closure | Deploy and verify the direct-cancellation fix, connect production alerts, and complete production-like soak criteria | Streaming lifecycle section below |
 
 The settlement race, CI integration coverage, conflict detection, readiness
 policy, payload versioning, queue index, and completed-event retention work are
@@ -107,6 +107,38 @@ leases behind long enough for a later call in the same agent run to be rejected.
    `req_d7d6805e4e5c4292bff994b52e12e90d`, and final rejected request
    `req_2ac7cce658874830a34b7007e0097a08`.
 
+### Residual production observation on 2026-07-22
+
+Dayboard Run `d7079ded-c414-4177-9e8a-b0feb60f103b` made four requests correlated
+through Northgate metadata. Three request and attempt pairs settled successfully
+with totals of 478, 3,387, and 497 tokens and zero cached prompt tokens. The
+fourth provider stream returned HTTP 200 and Dayboard observed 2,449 prompt plus
+14 completion tokens, but Northgate left both durable records as `started` and
+created no settlement event.
+
+The investigation reproduced a matching failure mode. A direct
+`asyncio.Task.cancel()` can interrupt an AnyIO-shielded finalizer, and the
+settlement event was previously inserted only after upstream close, cache, and
+route-health work. Cancellation in that interval therefore left the request and
+attempt `started` with no durable event, matching the observed record shape.
+
+The fix runs finalization in an independently shielded task, defers cancellation
+propagation until that task completes, and inserts the durable event before
+reconstructible close/cache/health side effects. A real PostgreSQL and Redis test
+uses the observed 2,449/14/2,463 usage values and verifies terminal request and
+attempt records, a completed event, metadata trust, and lease release under
+direct ASGI task cancellation. This is strong evidence for the failure mode, but
+production attribution remains provisional until the deployed fix closes the
+same path in telemetry. Reconciliation may expose or mark an old stale record;
+it cannot reconstruct provider usage that was never durably handed off.
+
+The same investigation also confirmed that correlated diagnostics work, while
+the returned `metadata_trust` for this Run was `null`. Application-key trust
+configuration must be verified separately from settlement correctness.
+
+The proposed operator REST, CLI, and read-only MCP diagnostic contract is in
+[`diagnostics-interface.md`](diagnostics-interface.md).
+
 These were coupled lifecycle and deployment defects, not three independent
 provider outages.
 
@@ -166,6 +198,14 @@ Settlement correctness work completed on 2026-07-22:
 
 Implemented on 2026-07-22:
 
+- Direct application-task cancellation now waits for the stream finalizer's
+  independent task before propagating `CancelledError`. This covers cancellation
+  outside AnyIO's cancel-scope semantics, including server task shutdown.
+- Stream finalization creates the durable settlement event before upstream close,
+  cache writes, and route-health updates. A production-shaped PostgreSQL/Redis
+  regression test cancels ASGI 2.3 handling during upstream close and verifies
+  exact usage, request/attempt settlement, event completion, metadata trust, and
+  Redis lease release.
 - A real PostgreSQL and Redis integration test now runs three sequential SSE
   requests under concurrency limit one. Each stream terminates at `[DONE]`, each
   request and attempt reaches `succeeded`, and the lease count returns to zero

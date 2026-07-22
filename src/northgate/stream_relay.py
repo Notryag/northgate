@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from typing import Protocol
 
 import httpx
@@ -20,9 +20,20 @@ class StreamFinalizer(Protocol):
     ) -> None: ...
 
 
-async def _finish_during_cancellation(awaitable) -> None:
+async def _finish_during_cancellation(awaitable: Awaitable[None]) -> None:
+    directly_cancelled = False
     with CancelScope(shield=True):
-        await awaitable
+        task = asyncio.create_task(awaitable)
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                directly_cancelled = True
+        task.result()
+    if directly_cancelled:
+        raise asyncio.CancelledError()
 
 
 async def relay_response_body(

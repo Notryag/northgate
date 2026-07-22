@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 
 import httpx
@@ -101,6 +102,51 @@ async def test_relay_reports_transport_failure_to_finalizer() -> None:
     assert finalization.transport_failed is True
     assert finalization.completed is False
     assert finalization.cache_body is None
+
+
+@pytest.mark.anyio
+async def test_direct_task_cancellation_waits_for_finalizer() -> None:
+    class BlockingFinalizer(RecordedFinalization):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.completed = False
+
+        async def finish(self, **kwargs: object) -> None:
+            self.entered.set()
+            await self.release.wait()
+            await super().finish(**kwargs)
+            self.completed = True
+
+    response = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        stream=TerminalThenErrorStream(),
+        request=httpx.Request("POST", "https://provider.test"),
+    )
+    finalization = BlockingFinalizer()
+
+    async def consume() -> None:
+        async for _chunk in relay_response_body(
+            response,
+            started_at=0.0,
+            cache_enabled=False,
+            cache_max_entry_bytes=1024,
+            finalizer=finalization,
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(finalization.entered.wait(), timeout=1)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert finalization.completed is False
+    finalization.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+    assert finalization.completed is True
 
 
 @pytest.fixture

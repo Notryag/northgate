@@ -39,6 +39,11 @@ The data plane and control plane still run in one FastAPI process. The settlemen
 worker is independently deployable. Separate data/control binaries and versioned
 in-memory gateway configuration snapshots are not implemented.
 
+Operator REST endpoints can correlate request records by allowlisted metadata and
+inspect provider attempts. A joined diagnostics service, supported diagnostics
+CLI, and read-only operator MCP server are not implemented; their proposed shared
+contract is documented in `diagnostics-interface.md`.
+
 ## Request path
 
 ```text
@@ -66,8 +71,9 @@ a healthy primary route.
 
 Request bodies are bounded by `NORTHGATE_MAX_REQUEST_BODY_BYTES`, including
 chunked bodies. SSE `[DONE]` terminates relay processing without waiting for
-upstream EOF. Shielded finalization protects accounting from downstream
-cancellation.
+upstream EOF. Finalization creates the durable settlement event before upstream
+close, cache, and route-health side effects. It runs in an independent task and
+delays direct task-cancellation propagation until accounting completes.
 
 ## Settlement and recovery
 
@@ -161,7 +167,7 @@ CI has separate jobs:
   `integration` with store failures configured to fail rather than skip.
 
 At this review, migration `0016` is the single Alembic head. The local suite has
-75 non-integration and 7 real-store integration tests. Counts are a snapshot, not
+76 non-integration and 8 real-store integration tests. Counts are a snapshot, not
 a contract; new behavior should add proportional coverage.
 
 ## Open work
@@ -176,7 +182,9 @@ The next architectural work is intentionally narrower than provider expansion:
 4. add independent data-plane/control-plane entry points;
 5. add application and trusted-tenant policy subjects before a generic hierarchy;
 6. connect production heartbeat/backlog alerts and complete production-like soak
-   closure criteria.
+   closure criteria;
+7. deploy and verify the direct-cancellation settlement fix, then implement the
+   shared operator diagnostics contract.
 
 See `known-issues.md` for active reliability closure criteria and `roadmap.md` for
 milestone ordering.

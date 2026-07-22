@@ -67,6 +67,84 @@ class StreamFinalization:
     ) -> None:
         if transport_failed:
             self.totals.ambiguous = True
+        usage = accumulator.result()
+        if outcome == "client_disconnected" and usage.total_tokens is None:
+            self.totals.ambiguous = True
+        cost_microusd = (
+            self.price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
+            if self.price is not None
+            else None
+        )
+        self.totals.add(usage, cost_microusd)
+        aggregate_usage = self.totals.usage()
+        aggregate_cost = self.totals.cost_microusd if self.totals.has_cost else None
+        event_id: UUID | None = None
+        if self.settlement_coordinator is not None and self.recorder is not None:
+            payload: dict[str, object] = {
+                "request": {
+                    "outcome": outcome,
+                    "status_code": self.response.status_code,
+                    "provider_request_id": self.response.headers.get("x-request-id"),
+                    "prompt_tokens": aggregate_usage.prompt_tokens,
+                    "completion_tokens": aggregate_usage.completion_tokens,
+                    "total_tokens": aggregate_usage.total_tokens,
+                    "cached_prompt_tokens": aggregate_usage.cached_prompt_tokens,
+                    "cost_microusd": aggregate_cost,
+                    "route_id": (
+                        str(self.route.route_id) if self.route.route_id is not None else None
+                    ),
+                    "provider": self.route.provider,
+                    "price_id": (
+                        str(self.price.price_id)
+                        if self.price is not None and self.price.price_id is not None
+                        else None
+                    ),
+                    "latency_ms": round((time.perf_counter() - self.started_at) * 1000),
+                    "first_token_ms": accumulator.first_token_ms,
+                },
+                "attempt": (
+                    {
+                        "id": str(self.attempt_id),
+                        "outcome": outcome,
+                        "status_code": self.response.status_code,
+                        "provider_request_id": self.response.headers.get("x-request-id"),
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "total_tokens": usage.total_tokens,
+                        "cached_prompt_tokens": usage.cached_prompt_tokens,
+                        "cost_microusd": cost_microusd,
+                        "latency_ms": round((time.perf_counter() - self.attempt_started_at) * 1000),
+                    }
+                    if self.attempt_id is not None
+                    else None
+                ),
+                "policy": (
+                    {
+                        "gateway_key": self.policy_lease.gateway_key,
+                        "token_day": self.policy_lease.token_day,
+                        "spend_day": self.policy_lease.spend_day,
+                        "spend_month": self.policy_lease.spend_month,
+                        "actual_tokens": (
+                            None if self.totals.ambiguous else aggregate_usage.total_tokens
+                        ),
+                        "actual_cost_microusd": (None if self.totals.ambiguous else aggregate_cost),
+                    }
+                    if self.policy_lease is not None
+                    else None
+                ),
+            }
+            try:
+                event_id = await self.settlement_coordinator.enqueue(
+                    request_id=self.request_id,
+                    payload=payload,
+                )
+            except Exception:
+                if self.metrics is not None:
+                    self.metrics.settlement_failures.labels(stage="outbox_enqueue").inc()
+                await logger.aexception(
+                    "settlement_outbox_enqueue_failed",
+                    northgate_request_id=self.request_id,
+                )
         try:
             await self.response.aclose()
         except Exception:
@@ -133,100 +211,23 @@ class StreamFinalization:
                     route=self.route_health_key,
                     northgate_request_id=self.request_id,
                 )
-        usage = accumulator.result()
-        if outcome == "client_disconnected" and usage.total_tokens is None:
-            self.totals.ambiguous = True
-        cost_microusd = (
-            self.price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
-            if self.price is not None
-            else None
-        )
-        self.totals.add(usage, cost_microusd)
-        aggregate_usage = self.totals.usage()
-        aggregate_cost = self.totals.cost_microusd if self.totals.has_cost else None
-        if self.settlement_coordinator is not None and self.recorder is not None:
-            payload: dict[str, object] = {
-                "request": {
-                    "outcome": outcome,
-                    "status_code": self.response.status_code,
-                    "provider_request_id": self.response.headers.get("x-request-id"),
-                    "prompt_tokens": aggregate_usage.prompt_tokens,
-                    "completion_tokens": aggregate_usage.completion_tokens,
-                    "total_tokens": aggregate_usage.total_tokens,
-                    "cached_prompt_tokens": aggregate_usage.cached_prompt_tokens,
-                    "cost_microusd": aggregate_cost,
-                    "route_id": str(self.route.route_id)
-                    if self.route.route_id is not None
-                    else None,
-                    "provider": self.route.provider,
-                    "price_id": (
-                        str(self.price.price_id)
-                        if self.price is not None and self.price.price_id is not None
-                        else None
-                    ),
-                    "latency_ms": round((time.perf_counter() - self.started_at) * 1000),
-                    "first_token_ms": accumulator.first_token_ms,
-                },
-                "attempt": (
-                    {
-                        "id": str(self.attempt_id),
-                        "outcome": outcome,
-                        "status_code": self.response.status_code,
-                        "provider_request_id": self.response.headers.get("x-request-id"),
-                        "prompt_tokens": usage.prompt_tokens,
-                        "completion_tokens": usage.completion_tokens,
-                        "total_tokens": usage.total_tokens,
-                        "cached_prompt_tokens": usage.cached_prompt_tokens,
-                        "cost_microusd": cost_microusd,
-                        "latency_ms": round((time.perf_counter() - self.attempt_started_at) * 1000),
-                    }
-                    if self.attempt_id is not None
-                    else None
-                ),
-                "policy": (
-                    {
-                        "gateway_key": self.policy_lease.gateway_key,
-                        "token_day": self.policy_lease.token_day,
-                        "spend_day": self.policy_lease.spend_day,
-                        "spend_month": self.policy_lease.spend_month,
-                        "actual_tokens": (
-                            None if self.totals.ambiguous else aggregate_usage.total_tokens
-                        ),
-                        "actual_cost_microusd": (None if self.totals.ambiguous else aggregate_cost),
-                    }
-                    if self.policy_lease is not None
-                    else None
-                ),
-            }
-            try:
-                event_id = await self.settlement_coordinator.enqueue(
-                    request_id=self.request_id,
-                    payload=payload,
+        if event_id is not None:
+            if self.policy_engine is not None and self.policy_lease is not None:
+                await self.policy_engine.stop_renewal(self.policy_lease)
+            if await self.settlement_coordinator.process(event_id):
+                await settle_attempt_safely(
+                    None,
+                    metrics=self.metrics,
+                    route=self.route,
+                    attempt_id=self.attempt_id,
+                    outcome=outcome,
+                    status_code=self.response.status_code,
+                    provider_request_id=self.response.headers.get("x-request-id"),
+                    started_at=self.attempt_started_at,
+                    usage=usage,
+                    cost_microusd=cost_microusd,
                 )
-            except Exception:
-                if self.metrics is not None:
-                    self.metrics.settlement_failures.labels(stage="outbox_enqueue").inc()
-                await logger.aexception(
-                    "settlement_outbox_enqueue_failed",
-                    northgate_request_id=self.request_id,
-                )
-            else:
-                if self.policy_engine is not None and self.policy_lease is not None:
-                    await self.policy_engine.stop_renewal(self.policy_lease)
-                if await self.settlement_coordinator.process(event_id):
-                    await settle_attempt_safely(
-                        None,
-                        metrics=self.metrics,
-                        route=self.route,
-                        attempt_id=self.attempt_id,
-                        outcome=outcome,
-                        status_code=self.response.status_code,
-                        provider_request_id=self.response.headers.get("x-request-id"),
-                        started_at=self.attempt_started_at,
-                        usage=usage,
-                        cost_microusd=cost_microusd,
-                    )
-                    return
+                return
         await settle_attempt_safely(
             self.recorder,
             metrics=self.metrics,

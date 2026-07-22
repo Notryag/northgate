@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
@@ -46,6 +47,23 @@ class TerminalThenHangStream(httpx.AsyncByteStream):
     async def aclose(self) -> None:
         self.closed.set()
         self.release.set()
+
+
+class TerminalThenBlockedCloseStream(httpx.AsyncByteStream):
+    def __init__(self) -> None:
+        self.close_entered = asyncio.Event()
+        self.release_close = asyncio.Event()
+
+    async def __aiter__(self):
+        yield (
+            b'data: {"usage": {"prompt_tokens": 2449, '
+            b'"completion_tokens": 14, "total_tokens": 2463}}\n\n'
+        )
+        yield b"data: [DONE]\n\n"
+
+    async def aclose(self) -> None:
+        self.close_entered.set()
+        await self.release_close.wait()
 
 
 @pytest.mark.anyio
@@ -173,6 +191,170 @@ async def test_real_storage_sequential_streams_release_policy_leases() -> None:
             )
             await session.commit()
         await redis.delete(f"northgate:policy:{{{gateway_slug}}}:concurrency")
+        await upstream_client.aclose()
+        await database.close()
+        await redis.aclose()
+
+
+@pytest.mark.anyio
+async def test_direct_cancellation_after_terminal_event_preserves_durable_usage() -> None:
+    database_url = os.environ.get(
+        "NORTHGATE_TEST_DATABASE_URL",
+        "postgresql+asyncpg://northgate:northgate@127.0.0.1:5433/northgate",
+    )
+    redis_url = os.environ.get(
+        "NORTHGATE_TEST_REDIS_URL",
+        "redis://127.0.0.1:6380/15",
+    )
+    database = Database(database_url)
+    redis = Redis.from_url(redis_url)
+    try:
+        if not await database.ping():
+            _integration_store_unavailable("PostgreSQL is not available")
+        await redis.ping()
+        async with database.sessions() as session:
+            await session.execute(text("SELECT 1 FROM settlement_events LIMIT 1"))
+    except (RedisError, SQLAlchemyError, OSError):
+        await database.close()
+        await redis.aclose()
+        _integration_store_unavailable(
+            "Northgate integration stores are not available or are not migrated"
+        )
+
+    application_key = f"ng_integration_{uuid4().hex}"
+    gateway_slug = f"integration-cancel-{uuid4().hex[:12]}"
+    run_id = f"run-{uuid4().hex}"
+    policy_key = f"northgate:policy:{{{gateway_slug}}}:concurrency"
+    stream = TerminalThenBlockedCloseStream()
+
+    async def upstream(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=stream,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        Settings(
+            environment="test",
+            application_key_sha256=SecretStr(sha256(application_key.encode()).hexdigest()),
+            provider_base_url="https://provider.integration/v1",
+            provider_api_key=SecretStr("integration-provider-secret"),
+            usage_persistence_enabled=True,
+            settlement_outbox_enabled=True,
+            concurrency_limit=1,
+            concurrency_lease_seconds=30,
+            routing_source="configuration",
+            gateway_slug=gateway_slug,
+            database_url=SecretStr(database_url),
+            redis_url=SecretStr(redis_url),
+        ),
+        upstream_client=upstream_client,
+        database=database,
+        redis=redis,
+    )
+    path = f"/v1/gateways/{gateway_slug}/openai/chat/completions"
+    request_sent = False
+    request_id: str | None = None
+
+    async def receive() -> dict[str, object]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": b'{"model":"gpt-integration","stream":true}',
+                "more_body": False,
+            }
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        nonlocal request_id
+        if message["type"] != "http.response.start":
+            return
+        headers = dict(message["headers"])
+        request_id = headers[b"northgate-request-id"].decode()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": [
+            (b"host", b"test"),
+            (b"authorization", f"Bearer {application_key}".encode()),
+            (b"content-type", b"application/json"),
+            (b"northgate-metadata", f'{{"run_id":"{run_id}"}}'.encode()),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+    }
+
+    task = asyncio.create_task(app(scope, receive, send))
+    try:
+        await asyncio.wait_for(stream.close_entered.wait(), timeout=2)
+        assert request_id is not None
+        async with database.sessions() as session:
+            handed_off_event = await session.scalar(
+                select(SettlementEvent).where(SettlementEvent.request_id == request_id)
+            )
+        assert handed_off_event is not None
+        assert handed_off_event.status == "pending"
+        assert handed_off_event.database_settled_at is None
+
+        task.cancel()
+        await asyncio.sleep(0)
+        stream.release_close.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+
+        async with database.sessions() as session:
+            request_record = await session.get(RequestRecord, request_id)
+            attempt_record = await session.scalar(
+                select(ProviderAttemptRecord).where(ProviderAttemptRecord.request_id == request_id)
+            )
+            event = await session.scalar(
+                select(SettlementEvent).where(SettlementEvent.request_id == request_id)
+            )
+        assert request_record is not None and request_record.outcome == "succeeded"
+        assert request_record.prompt_tokens == 2449
+        assert request_record.completion_tokens == 14
+        assert request_record.total_tokens == 2463
+        assert request_record.request_metadata == {"run_id": run_id}
+        assert request_record.request_metadata_trust == {"run_id": "untrusted"}
+        assert attempt_record is not None and attempt_record.outcome == "succeeded"
+        assert attempt_record.total_tokens == 2463
+        assert event is not None and event.status == "completed"
+        assert event.database_settled_at is not None
+        assert event.policy_settled_at is not None
+        assert await redis.zcard(policy_key) == 0
+    finally:
+        stream.release_close.set()
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if request_id is not None:
+            async with database.sessions() as session:
+                await session.execute(
+                    delete(SettlementEvent).where(SettlementEvent.request_id == request_id)
+                )
+                await session.execute(
+                    delete(ProviderAttemptRecord).where(
+                        ProviderAttemptRecord.request_id == request_id
+                    )
+                )
+                await session.execute(
+                    delete(RequestRecord).where(RequestRecord.request_id == request_id)
+                )
+                await session.commit()
+        await redis.delete(policy_key, f"{policy_key}:started")
         await upstream_client.aclose()
         await database.close()
         await redis.aclose()

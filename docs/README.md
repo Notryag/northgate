@@ -40,6 +40,7 @@ older revision.
 | Configure or migrate Northgate | [Configuration and migrations](operations/configuration-and-migrations.md) |
 | Back up or upgrade | [Backup and restore](operations/backup-and-restore.md), [Upgrades](operations/upgrades.md) |
 | Integrate Dayboard | [Integration boundaries](integration-boundaries.md), [API design](api-design.md) |
+| Add AI-assisted operator diagnostics | [Operator diagnostics interface](diagnostics-interface.md), [Known issues](known-issues.md) |
 | Integrate an existing system | [Integration guide](integration-guide.md), [API design](api-design.md) |
 | Investigate an open reliability gap | [Known issues and hardening work](known-issues.md) |
 | Review durable technical decisions | [Architecture decisions](decisions/) |
@@ -53,6 +54,7 @@ older revision.
 - [API design](api-design.md): proposed data-plane and control-plane contracts.
 - [Integration boundaries](integration-boundaries.md): ownership split with Dayboard and `north`.
 - [Integration guide](integration-guide.md): compatibility checks, canary traffic, and rollback.
+- [Operator diagnostics interface](diagnostics-interface.md): proposed shared REST, CLI, and read-only MCP diagnostics contract.
 - [Known issues and hardening work](known-issues.md): active gaps first, then incident history and closure criteria.
 - [Architecture review](architecture-review.md): accepted assessment and ordered refactoring work.
 - [Roadmap](roadmap.md): ordered milestones and completion criteria.
