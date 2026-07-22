@@ -183,6 +183,13 @@ aggregate known usage/cache/cost, missing-usage counts, and stable finding codes
 Settlement payloads and request metadata values are not included in individual
 request results. Both endpoints require the operator key.
 
+`/api/v1/diagnostics/stale` accepts a minimum age from 30 seconds through 24
+hours and a limit up to 100. It finds stale request records and attempt-only
+inconsistencies, distinguishes recoverable settlement events from unprotected
+records, and joins matching active or expired Redis concurrency leases. Redis
+inspection is capped at 1,000 policy keys and reports truncation rather than
+silently treating an incomplete scan as complete.
+
 ## Implemented control-plane resources
 
 ```text

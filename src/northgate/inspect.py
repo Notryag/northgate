@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import stat
 import sys
 from collections.abc import Mapping, Sequence
@@ -14,6 +15,7 @@ EXIT_HEALTHY = 0
 EXIT_FINDINGS = 2
 EXIT_AUTH = 3
 EXIT_SERVICE = 4
+_DURATION = re.compile(r"^(\d+)([smh]?)$")
 
 
 class InspectError(Exception):
@@ -128,6 +130,12 @@ class OperatorDiagnosticsClient:
             params["end"] = end
         return self._get("/api/v1/diagnostics/correlated", params=params)
 
+    def inspect_stale(self, *, minimum_age_seconds: int, limit: int) -> dict[str, object]:
+        return self._get(
+            "/api/v1/diagnostics/stale",
+            params={"minimum_age_seconds": minimum_age_seconds, "limit": limit},
+        )
+
     def _get(
         self,
         path: str,
@@ -185,7 +193,24 @@ def _parser() -> argparse.ArgumentParser:
     request = commands.add_parser("request", help="Inspect one Northgate request")
     request.add_argument("request_id")
     request.add_argument("--json", action="store_true", dest="json_output")
+
+    stale = commands.add_parser("stale", help="Inspect stale accounting and policy state")
+    stale.add_argument("--minimum-age", type=_duration_seconds, default=300, metavar="DURATION")
+    stale.add_argument("--limit", type=int, default=100, choices=range(1, 101), metavar="1..100")
+    stale.add_argument("--json", action="store_true", dest="json_output")
     return parser
+
+
+def _duration_seconds(value: str) -> int:
+    match = _DURATION.fullmatch(value)
+    if match is None:
+        raise argparse.ArgumentTypeError("duration must be an integer with optional s, m, or h")
+    amount = int(match.group(1))
+    multiplier = {"": 1, "s": 1, "m": 60, "h": 3600}[match.group(2)]
+    seconds = amount * multiplier
+    if seconds < 30 or seconds > 86400:
+        raise argparse.ArgumentTypeError("duration must be between 30s and 24h")
+    return seconds
 
 
 def _finding_count(payload: dict[str, object]) -> int:
@@ -240,6 +265,20 @@ def _human_run(payload: dict[str, object], output: TextIO) -> None:
     _human_findings(payload, output)
 
 
+def _human_stale(payload: dict[str, object], output: TextIO) -> None:
+    requests = payload.get("requests")
+    if not isinstance(requests, list):
+        raise InspectServiceError("Diagnostics response is missing stale requests")
+    print(
+        f"Stale requests: {len(requests)}  Minimum age: {payload.get('minimum_age_seconds')}s  "
+        f"Policy state: {'available' if payload.get('policy_state_available') else 'unavailable'}",
+        file=output,
+    )
+    if payload.get("has_more") is True or payload.get("policy_keys_truncated") is True:
+        print("Result truncated: narrow the query or inspect policy state directly", file=output)
+    _human_findings(payload, output)
+
+
 def _human_findings(payload: dict[str, object], output: TextIO) -> None:
     finding_counts = payload.get("finding_counts")
     if isinstance(finding_counts, dict):
@@ -281,14 +320,21 @@ def run_cli(
                     end=args.end,
                     limit=args.limit,
                 )
-            else:
+            elif args.command == "request":
                 payload = diagnostics.inspect_request(args.request_id)
+            else:
+                payload = diagnostics.inspect_stale(
+                    minimum_age_seconds=args.minimum_age,
+                    limit=args.limit,
+                )
         finally:
             diagnostics.close()
         if args.json_output:
             print(json.dumps(payload, sort_keys=True), file=output)
         elif args.command == "run":
             _human_run(payload, output)
+        elif args.command == "stale":
+            _human_stale(payload, output)
         else:
             _human_request(payload, output)
         return EXIT_FINDINGS if _finding_count(payload) else EXIT_HEALTHY

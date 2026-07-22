@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import Query, Request
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import select
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
+from sqlalchemy import and_, or_, select
 
 from northgate.db.database import Database
 from northgate.db.models import ProviderAttemptRecord, RequestRecord, SettlementEvent
@@ -15,6 +17,8 @@ DIAGNOSTICS_SCHEMA_VERSION = 1
 _MAX_RANGE = timedelta(days=90)
 _METADATA_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _REQUEST_ID = re.compile(r"^req_[A-Za-z0-9_-]{8,120}$")
+_RECOVERABLE_SETTLEMENT_STATUSES = ("pending", "retry", "processing")
+_MAX_POLICY_KEYS = 1000
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -348,6 +352,182 @@ class DiagnosticsService:
             has_more=has_more,
         )
 
+    async def inspect_stale(
+        self,
+        *,
+        redis: Redis | None,
+        minimum_age_seconds: int,
+        limit: int,
+    ) -> dict[str, object]:
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(seconds=minimum_age_seconds)
+        stale_attempt_requests = select(ProviderAttemptRecord.request_id).where(
+            ProviderAttemptRecord.outcome == "started",
+            ProviderAttemptRecord.started_at < cutoff,
+        )
+        async with self.database.sessions() as session:
+            records = list(
+                (
+                    await session.scalars(
+                        select(RequestRecord)
+                        .where(
+                            or_(
+                                and_(
+                                    RequestRecord.outcome == "started",
+                                    RequestRecord.started_at < cutoff,
+                                ),
+                                RequestRecord.request_id.in_(stale_attempt_requests),
+                            )
+                        )
+                        .order_by(RequestRecord.started_at, RequestRecord.request_id)
+                        .limit(limit + 1)
+                    )
+                ).all()
+            )
+            has_more = len(records) > limit
+            records = records[:limit]
+            request_ids = [record.request_id for record in records]
+            attempts: Sequence[ProviderAttemptRecord] = ()
+            events: Sequence[SettlementEvent] = ()
+            if request_ids:
+                attempts = (
+                    await session.scalars(
+                        select(ProviderAttemptRecord).where(
+                            ProviderAttemptRecord.request_id.in_(request_ids)
+                        )
+                    )
+                ).all()
+                events = (
+                    await session.scalars(
+                        select(SettlementEvent).where(SettlementEvent.request_id.in_(request_ids))
+                    )
+                ).all()
+
+        attempts_by_request: dict[str, list[ProviderAttemptRecord]] = defaultdict(list)
+        for attempt in attempts:
+            attempts_by_request[attempt.request_id].append(attempt)
+        events_by_request: dict[str, list[SettlementEvent]] = defaultdict(list)
+        for event in events:
+            events_by_request[event.request_id].append(event)
+        leases_by_request, policy_keys_truncated = await _policy_leases(
+            redis,
+            request_ids,
+            now=now,
+        )
+
+        diagnostics: list[dict[str, object]] = []
+        all_findings: list[dict[str, object]] = []
+        for record in records:
+            request_attempts = attempts_by_request[record.request_id]
+            request_events = events_by_request[record.request_id]
+            diagnostic = build_request_diagnostic(
+                record,
+                request_attempts,
+                request_events,
+                settlement_expected=self.settlement_expected,
+            )
+            stale_attempt_indexes = [
+                attempt.attempt_index
+                for attempt in request_attempts
+                if attempt.outcome == "started" and attempt.started_at < cutoff
+            ]
+            recoverable = any(
+                event.status in _RECOVERABLE_SETTLEMENT_STATUSES for event in request_events
+            )
+            stale_findings = [
+                _finding(
+                    "RECOVERABLE_SETTLEMENT_PENDING"
+                    if recoverable
+                    else "UNPROTECTED_STALE_SETTLEMENT",
+                    "info" if recoverable else "error",
+                    record.request_id,
+                )
+            ]
+            request_leases = leases_by_request.get(record.request_id, [])
+            if request_leases:
+                stale_findings.append(
+                    _finding(
+                        "STALE_CONCURRENCY_LEASE",
+                        "error" if any(item["expired"] for item in request_leases) else "warning",
+                        record.request_id,
+                        {"lease_count": len(request_leases)},
+                    )
+                )
+            findings = diagnostic["findings"]
+            if isinstance(findings, list):
+                findings.extend(stale_findings)
+                all_findings.extend(findings)
+            diagnostic["stale"] = {
+                "request_started": record.outcome == "started" and record.started_at < cutoff,
+                "stale_attempt_indexes": stale_attempt_indexes,
+                "age_seconds": max(0, round((now - record.started_at).total_seconds())),
+                "recoverable_settlement": recoverable,
+                "concurrency_leases": request_leases,
+            }
+            diagnostics.append(diagnostic)
+
+        finding_counts = Counter(item["code"] for item in all_findings)
+        return {
+            "schema_version": DIAGNOSTICS_SCHEMA_VERSION,
+            "cutoff": cutoff.isoformat(),
+            "minimum_age_seconds": minimum_age_seconds,
+            "has_more": has_more,
+            "policy_state_available": redis is not None,
+            "policy_keys_truncated": policy_keys_truncated,
+            "finding_counts": dict(sorted(finding_counts.items())),
+            "requests": diagnostics,
+            "findings": all_findings,
+        }
+
+
+async def _policy_leases(
+    redis: Redis | None,
+    request_ids: Sequence[str],
+    *,
+    now: datetime,
+) -> tuple[dict[str, list[dict[str, object]]], bool]:
+    leases: dict[str, list[dict[str, object]]] = defaultdict(list)
+    if redis is None or not request_ids:
+        return leases, False
+    now_ms = int(now.timestamp() * 1000)
+    keys_seen = 0
+    truncated = False
+    async for raw_key in redis.scan_iter(match="northgate:policy:*:concurrency"):
+        keys_seen += 1
+        if keys_seen > _MAX_POLICY_KEYS:
+            truncated = True
+            break
+        key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+        scores = await redis.zmscore(key, request_ids)
+        started_values = await redis.hmget(f"{key}:started", request_ids)
+        for request_id, score, started_value in zip(
+            request_ids,
+            scores,
+            started_values,
+            strict=True,
+        ):
+            if score is None:
+                continue
+            started_ms = int(started_value) if started_value is not None else None
+            leases[request_id].append(
+                {
+                    "policy_key": key,
+                    "started_at": (
+                        datetime.fromtimestamp(started_ms / 1000, UTC).isoformat()
+                        if started_ms is not None
+                        else None
+                    ),
+                    "expires_at": datetime.fromtimestamp(score / 1000, UTC).isoformat(),
+                    "age_seconds": (
+                        max(0, round((now_ms - started_ms) / 1000))
+                        if started_ms is not None
+                        else None
+                    ),
+                    "expired": score <= now_ms,
+                }
+            )
+    return leases, truncated
+
 
 def _database(request: Request) -> Database | None:
     return request.app.state.database
@@ -429,4 +609,40 @@ async def diagnostics_correlated(
         end=resolved_end,
         limit=limit,
     )
+    return JSONResponse(result)
+
+
+async def diagnostics_stale(
+    request: Request,
+    minimum_age_seconds: int = Query(default=300, ge=30, le=86400),
+    limit: int = Query(default=100, ge=1, le=100),
+) -> Response:
+    authorization_error = authorize_operator(request)
+    if authorization_error is not None:
+        return authorization_error
+    database = _database(request)
+    if database is None:
+        return JSONResponse(
+            {"error": {"code": "DIAGNOSTICS_UNAVAILABLE", "message": "Diagnostics unavailable"}},
+            status_code=503,
+        )
+    try:
+        result = await DiagnosticsService(
+            database,
+            settlement_expected=request.app.state.settings.settlement_outbox_enabled,
+        ).inspect_stale(
+            redis=request.app.state.redis,
+            minimum_age_seconds=minimum_age_seconds,
+            limit=limit,
+        )
+    except RedisError:
+        return JSONResponse(
+            {
+                "error": {
+                    "code": "DIAGNOSTICS_POLICY_UNAVAILABLE",
+                    "message": "Diagnostics policy state unavailable",
+                }
+            },
+            status_code=503,
+        )
     return JSONResponse(result)

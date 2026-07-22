@@ -1,6 +1,6 @@
 # Operator diagnostics interface
 
-Status: shared service, Operator REST, and run/request CLI implemented; MCP, stale-policy join, and console open
+Status: shared service, Operator REST, and CLI implemented; MCP and console open
 Last reviewed: 2026-07-22
 
 This document defines a read-only diagnostics surface for operators and coding
@@ -31,6 +31,8 @@ Northgate already implements:
   redacted settlement state, and stable findings;
 - `GET /api/v1/diagnostics/correlated` with bounded metadata correlation,
   aggregate usage/cache/cost, finding counts, and ordered request diagnostics;
+- `GET /api/v1/diagnostics/stale` with bounded stale request/attempt detection,
+  recoverable-event classification, and active or expired concurrency leases;
 - `GET /api/v1/usage/requests` filtered by metadata key and value;
 - `GET /api/v1/usage/requests/{request_id}/attempts`;
 - normalized `cached_prompt_tokens` extraction from OpenAI-compatible usage;
@@ -42,8 +44,7 @@ values inside an individual request, settlement payloads, prompts, responses, or
 tool data. The correlation endpoint echoes only its operator-supplied filter.
 
 The React console does not yet expose correlated request diagnostics. There is
-also no supported CLI or MCP server for this workflow, and stale Redis policy
-state is not yet joined into the response. Direct PostgreSQL queries are an
+also no supported MCP server for this workflow. Direct PostgreSQL queries are an
 emergency investigation technique, not a product interface.
 
 ## Proposed architecture
@@ -92,7 +93,10 @@ findings. Initial finding codes should cover:
 - `EXACT_CACHE_BYPASSED`;
 - `METADATA_TRUST_MISSING`;
 - `RETRY_OR_FALLBACK_USED`;
-- `REQUEST_ATTEMPT_TOTAL_MISMATCH`.
+- `REQUEST_ATTEMPT_TOTAL_MISMATCH`;
+- `RECOVERABLE_SETTLEMENT_PENDING`;
+- `UNPROTECTED_STALE_SETTLEMENT`;
+- `STALE_CONCURRENCY_LEASE`.
 
 Findings report evidence; they must not invent usage or infer provider billing
 when usage is absent.
@@ -108,12 +112,11 @@ northgate-inspect request <request-id> [--json]
 northgate-inspect stale [--minimum-age 5m] [--limit 100] [--json]
 ```
 
-`run` and `request` are implemented. `stale` remains open until the shared
-service joins stale records and relevant Redis lease state. `--json` emits the
-REST response without changing its versioned shape; human output is a compact
-summary. Exit codes are `0` for no findings, `2` for findings present, `3` for
-authorization failure, and `4` for configuration, transport, or service failure.
-The CLI uses Operator APIs and never connects directly to PostgreSQL.
+`run`, `request`, and `stale` are implemented. `--json` emits the REST response
+without changing its versioned shape; human output is a compact summary. Exit
+codes are `0` for no findings, `2` for findings present, `3` for authorization
+failure, and `4` for configuration, transport, or service failure. The CLI uses
+Operator APIs and never connects directly to PostgreSQL or Redis.
 
 Configure it with `NORTHGATE_INSPECT_BASE_URL` and exactly one of
 `NORTHGATE_INSPECT_OPERATOR_KEY` or `NORTHGATE_INSPECT_OPERATOR_KEY_FILE`. Key
@@ -176,15 +179,15 @@ assuming every ledger record is complete.
    terminal usage plus `[DONE]`, blocked upstream close, and direct task
    cancellation.
 2. Completed on 2026-07-22: add a diagnostics service that joins request,
-   attempts, and settlement events and emits stable finding codes. Relevant
-   Redis policy state remains an extension of this service.
+   attempts, settlement events, and relevant Redis concurrency leases and emits
+   stable finding codes.
 3. Completed on 2026-07-22: add Operator REST responses for individual requests
    and bounded correlated request sets.
 4. Add the independently deployable read-only MCP adapter over the same API as
    the primary coding-agent interface.
-5. Partially completed on 2026-07-22: `northgate-inspect run` and `request` are a
+5. Completed on 2026-07-22: `northgate-inspect run`, `request`, and `stale` are a
    thin REST client with JSON and human output for operators, CI, and recovery
-   environments. Add `stale` after the shared stale-policy diagnostic exists.
+   environments.
 6. Add a correlated-request view to the console after the machine interface is
    stable.
 

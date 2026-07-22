@@ -70,6 +70,25 @@ def _request_payload() -> dict[str, object]:
     }
 
 
+def _stale_payload() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "minimum_age_seconds": 300,
+        "has_more": False,
+        "policy_state_available": True,
+        "policy_keys_truncated": False,
+        "finding_counts": {"UNPROTECTED_STALE_SETTLEMENT": 1},
+        "requests": [{"request": {"request_id": "req_12345678"}}],
+        "findings": [
+            {
+                "code": "UNPROTECTED_STALE_SETTLEMENT",
+                "severity": "error",
+                "request_id": "req_12345678",
+            }
+        ],
+    }
+
+
 def test_run_json_uses_operator_api_and_returns_findings_exit_code() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/diagnostics/correlated"
@@ -118,6 +137,28 @@ def test_request_human_output_returns_healthy_exit_code() -> None:
     assert "Request: req_12345678" in output.getvalue()
     assert "Tokens: prompt=3 completion=2 total=5 cached=0" in output.getvalue()
     assert "Findings: none" in output.getvalue()
+
+
+def test_stale_command_parses_duration_and_uses_bounded_endpoint() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/diagnostics/stale"
+        assert request.url.params["minimum_age_seconds"] == "300"
+        assert request.url.params["limit"] == "20"
+        return httpx.Response(200, json=_stale_payload())
+
+    output = StringIO()
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        exit_code = run_cli(
+            ["stale", "--minimum-age", "5m", "--limit", "20"],
+            environ=_environment(),
+            client=client,
+            output=output,
+            error=StringIO(),
+        )
+
+    assert exit_code == EXIT_FINDINGS
+    assert "Stale requests: 1" in output.getvalue()
+    assert "UNPROTECTED_STALE_SETTLEMENT: 1" in output.getvalue()
 
 
 @pytest.mark.parametrize("status_code", [401, 403])

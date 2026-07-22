@@ -290,6 +290,7 @@ export NORTHGATE_INSPECT_BASE_URL=http://127.0.0.1:8080
 export NORTHGATE_INSPECT_OPERATOR_KEY=<operator key>
 uv run northgate-inspect run <run-id>
 uv run northgate-inspect request <request-id> --json
+uv run northgate-inspect stale --minimum-age 5m
 ```
 
 也可以通过权限为 `0600` 的文件设置
