@@ -273,6 +273,12 @@ def create_app(
         name="console-assets",
     )
     app.add_api_route("/console", console_index, methods=["GET"], include_in_schema=False)
+    app.add_api_route(
+        "/console/{path:path}",
+        console_index,
+        methods=["GET"],
+        include_in_schema=False,
+    )
 
     return app
 

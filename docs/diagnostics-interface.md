@@ -1,6 +1,6 @@
 # Operator diagnostics interface
 
-Status: shared service, Operator REST, CLI, and read-only MCP implemented; console open
+Status: REST, CLI, MCP, and console request diagnostics implemented
 Last reviewed: 2026-07-22
 
 This document defines a read-only diagnostics surface for operators and coding
@@ -43,9 +43,9 @@ The diagnostics REST schema is version `1`. It never returns request metadata
 values inside an individual request, settlement payloads, prompts, responses, or
 tool data. The correlation endpoint echoes only its operator-supplied filter.
 
-The React console does not yet expose correlated request diagnostics. Direct
-PostgreSQL queries are an emergency investigation technique, not a product
-interface.
+The React console exposes recent and correlated request diagnostics, provider
+attempts, findings, and redacted settlement progress. Direct PostgreSQL queries
+remain an emergency investigation technique, not a product interface.
 
 ## Implemented architecture
 
@@ -193,8 +193,9 @@ assuming every ledger record is complete.
 5. Completed on 2026-07-22: `northgate-inspect run`, `request`, and `stale` are a
    thin REST client with JSON and human output for operators, CI, and recovery
    environments.
-6. Add a correlated-request view to the console after the machine interface is
-   stable.
+6. Completed on 2026-07-22: expose recent and correlated requests, attempts, settlement
+   progress, and findings through the management console defined in
+   [Operator console](console.md).
 
 Do not let MCP implementation delay the settlement fix. Do not make the MCP
 server query Northgate's database directly as a shortcut.

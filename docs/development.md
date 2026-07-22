@@ -209,3 +209,20 @@ returns Dayboard to the single-tenant canary.
   no matched price, and an authoritative exact price could not be retrieved during
   this deployment. Operators must record the supplier or contract price before
   treating cost analytics as complete or enabling spend limits.
+
+### 2026-07-22: Operator console phase 1
+
+- Replaced the single-page dashboard composition with a React Router management
+  shell and route-level lazy loading for Overview, Requests, Usage, and Pricing.
+- Added TanStack Query server-state handling, Zod response validation, Ant Design
+  management controls, and React Hook Form forms while retaining Recharts for the
+  bounded traffic and token chart.
+- Added a bounded newest-first mode to `GET /api/v1/usage/requests`, including
+  `has_more` and known request cost, while retaining paired metadata correlation
+  and redaction of metadata values and request content.
+- Added request detail pages over the shared diagnostics API with findings,
+  provider attempts, and redacted settlement progress. FastAPI now serves the SPA
+  index for nested Console URLs.
+- Ran the focused analytics and application tests, Ruff checks, Console TypeScript
+  check, and production build. The Ant Design shared chunk remains larger than the
+  default Vite warning threshold; business pages are separately lazy-loaded.

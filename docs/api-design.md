@@ -168,12 +168,13 @@ project, and gateway filters as the other aggregate usage APIs.
 attempt ledger to operators. Retry and fallback happen only before downstream
 response headers are sent; mid-stream failures terminate the stream.
 
-`/api/v1/usage/requests` accepts `metadata_key`, `metadata_value`, and an optional
-time range. It returns the matching request records with admission estimates,
-actual tokens, cached prompt tokens, exact-cache status, outcome, and stable error
-code. This operator-only endpoint is the generic correlation surface for an
-application run or another authenticated metadata dimension. It does not return
-prompt or response content.
+`/api/v1/usage/requests` accepts an optional paired `metadata_key` and
+`metadata_value`, an optional time range, and a limit up to 100. Without metadata
+it returns the newest bounded request records; with metadata it is the generic
+correlation surface for an application run or another authenticated dimension.
+The response includes admission estimates, actual tokens, cached prompt tokens,
+cost when known, exact-cache status, outcome, stable error code, and `has_more`.
+It does not return metadata values, prompt or response content.
 
 `/api/v1/diagnostics/requests/{request_id}` joins the request, ordered provider
 attempts, and redacted settlement-event progress into diagnostics schema version

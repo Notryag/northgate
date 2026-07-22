@@ -34,6 +34,18 @@ async def test_metrics_are_disabled_by_default() -> None:
 
 
 @pytest.mark.anyio
+async def test_console_routes_fall_back_to_spa_index() -> None:
+    app = create_app(Settings(environment="test"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        index = await client.get("/console")
+        nested = await client.get("/console/requests/req_12345678")
+
+    assert index.status_code == 200
+    assert nested.status_code == 200
+    assert nested.text == index.text
+
+
+@pytest.mark.anyio
 async def test_metrics_require_configured_key_and_use_route_templates() -> None:
     metrics_key = "metrics-test-secret"
     app = create_app(

@@ -150,6 +150,7 @@ async def test_request_diagnostics_filter_by_metadata() -> None:
         completion_tokens=5,
         total_tokens=75,
         cached_prompt_tokens=60,
+        cost_microusd=125,
         cache_status="bypass",
         request_metadata_trust={"run_id": "untrusted"},
         latency_ms=42,
@@ -181,6 +182,7 @@ async def test_request_diagnostics_filter_by_metadata() -> None:
         )
 
     assert response.status_code == 200
+    assert response.json()["has_more"] is False
     assert response.json()["requests"] == [
         {
             "request_id": "req-test",
@@ -194,6 +196,7 @@ async def test_request_diagnostics_filter_by_metadata() -> None:
             "completion_tokens": 5,
             "total_tokens": 75,
             "cached_prompt_tokens": 60,
+            "cost_microusd": 125,
             "cache_status": "bypass",
             "metadata_trust": "untrusted",
             "latency_ms": 42,
@@ -201,6 +204,70 @@ async def test_request_diagnostics_filter_by_metadata() -> None:
             "completed_at": now.isoformat(),
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_recent_requests_are_bounded_without_exposing_metadata() -> None:
+    operator_key = "operator-test"
+    now = datetime.now(UTC)
+    records = [
+        SimpleNamespace(
+            request_id=f"req-test-{index}",
+            model="gpt-test",
+            provider="openai",
+            outcome="succeeded",
+            http_status=200,
+            error_code=None,
+            estimated_tokens=120,
+            prompt_tokens=70,
+            completion_tokens=5,
+            total_tokens=75,
+            cached_prompt_tokens=None,
+            cost_microusd=None,
+            cache_status="bypass",
+            request_metadata_trust={"run_id": "untrusted"},
+            latency_ms=42,
+            started_at=now,
+            completed_at=now,
+        )
+        for index in range(3)
+    ]
+    app = create_app(
+        Settings(
+            environment="test",
+            operator_key_sha256=SecretStr(sha256(operator_key.encode()).hexdigest()),
+            routing_source="configuration",
+            usage_persistence_enabled=False,
+            request_limit_per_minute=None,
+            concurrency_limit=None,
+            token_limit_per_day=None,
+            daily_spend_limit_microusd=None,
+            monthly_spend_limit_microusd=None,
+            exact_cache_ttl_seconds=None,
+            route_health_enabled=False,
+        )
+    )
+    app.state.database = _RequestDatabase(records)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/usage/requests",
+            params={"limit": 2},
+            headers={"Authorization": f"Bearer {operator_key}"},
+        )
+        incomplete_filter = await client.get(
+            "/api/v1/usage/requests",
+            params={"metadata_key": "run_id"},
+            headers={"Authorization": f"Bearer {operator_key}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["metadata_key"] is None
+    assert response.json()["metadata_value"] is None
+    assert response.json()["has_more"] is True
+    assert len(response.json()["requests"]) == 2
+    assert "request_metadata" not in response.text
+    assert incomplete_filter.status_code == 400
 
 
 @pytest.fixture

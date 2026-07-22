@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from fastapi import Request
+from fastapi import Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import case, func, select
 
@@ -392,15 +392,20 @@ async def usage_attempts(request: Request, request_id: str) -> Response:
 
 async def usage_requests(
     request: Request,
-    metadata_key: str,
-    metadata_value: str,
+    metadata_key: str | None = None,
+    metadata_value: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
 ) -> Response:
     authorization_error = authorize_operator(request)
     if authorization_error is not None:
         return authorization_error
-    if not _METADATA_KEY.fullmatch(metadata_key) or not 1 <= len(metadata_value) <= 256:
+    if (metadata_key is None) != (metadata_value is None) or (
+        metadata_key is not None
+        and metadata_value is not None
+        and (not _METADATA_KEY.fullmatch(metadata_key) or not 1 <= len(metadata_value) <= 256)
+    ):
         return JSONResponse(
             {"error": {"code": "INVALID_METADATA_FILTER", "message": "Invalid metadata filter"}},
             status_code=400,
@@ -419,23 +424,29 @@ async def usage_requests(
         )
 
     resolved_start, resolved_end = selected_range
+    filters = [
+        RequestRecord.started_at >= resolved_start,
+        RequestRecord.started_at < resolved_end,
+    ]
+    if metadata_key is not None and metadata_value is not None:
+        filters.append(RequestRecord.request_metadata[metadata_key].as_string() == metadata_value)
     statement = (
         select(RequestRecord)
-        .where(
-            RequestRecord.started_at >= resolved_start,
-            RequestRecord.started_at < resolved_end,
-            RequestRecord.request_metadata[metadata_key].as_string() == metadata_value,
-        )
-        .order_by(RequestRecord.started_at)
+        .where(*filters)
+        .order_by(RequestRecord.started_at.desc(), RequestRecord.request_id.desc())
+        .limit(limit + 1)
     )
     async with database.sessions() as session:
-        records = (await session.scalars(statement)).all()
+        records = list((await session.scalars(statement)).all())
+    has_more = len(records) > limit
+    records = records[:limit]
     return JSONResponse(
         {
             "start": resolved_start.isoformat(),
             "end": resolved_end.isoformat(),
             "metadata_key": metadata_key,
             "metadata_value": metadata_value,
+            "has_more": has_more,
             "requests": [
                 {
                     "request_id": record.request_id,
@@ -449,6 +460,7 @@ async def usage_requests(
                     "completion_tokens": record.completion_tokens,
                     "total_tokens": record.total_tokens,
                     "cached_prompt_tokens": record.cached_prompt_tokens,
+                    "cost_microusd": record.cost_microusd,
                     "cache_status": record.cache_status,
                     "metadata_trust": (record.request_metadata_trust or {}).get(metadata_key),
                     "latency_ms": record.latency_ms,

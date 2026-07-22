@@ -29,10 +29,10 @@ export default function UsageChart({ points }: { points: UsagePoint[] }) {
       {data.length ? (
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 12, right: 18, bottom: 4, left: 0 }}>
-            <CartesianGrid stroke="#e5e9e7" vertical={false} />
+            <CartesianGrid stroke="#e2e7e4" vertical={false} />
             <XAxis
               dataKey="label"
-              stroke="#77817c"
+              stroke="#74807a"
               tickLine={false}
               axisLine={false}
               minTickGap={28}
@@ -40,7 +40,7 @@ export default function UsageChart({ points }: { points: UsagePoint[] }) {
             />
             <YAxis
               yAxisId="requests"
-              stroke="#77817c"
+              stroke="#74807a"
               tickLine={false}
               axisLine={false}
               width={42}
@@ -51,7 +51,7 @@ export default function UsageChart({ points }: { points: UsagePoint[] }) {
             <Tooltip
               contentStyle={{
                 border: "1px solid #cbd3cf",
-                borderRadius: 6,
+                borderRadius: 5,
                 boxShadow: "0 8px 24px rgba(25,35,30,.12)",
                 fontSize: 12,
               }}
@@ -61,7 +61,7 @@ export default function UsageChart({ points }: { points: UsagePoint[] }) {
               type="monotone"
               dataKey="requests"
               name="Requests"
-              stroke="#1f6f4a"
+              stroke="#20805d"
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4 }}
@@ -71,7 +71,7 @@ export default function UsageChart({ points }: { points: UsagePoint[] }) {
               type="monotone"
               dataKey="total_tokens"
               name="Tokens"
-              stroke="#3667a6"
+              stroke="#356da5"
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4 }}

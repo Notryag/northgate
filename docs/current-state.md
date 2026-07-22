@@ -57,6 +57,13 @@ exposes five tools over stdio and calls the same Operator REST endpoints. It doe
 not query PostgreSQL or Redis directly and does not expose an unauthenticated HTTP
 transport.
 
+The React operator console now uses a routed management shell with Overview,
+Requests, Usage, and Pricing workspaces. Requests defaults to a bounded newest-first
+list, supports metadata correlation, and opens a stable detail URL with findings,
+provider attempts, and redacted settlement progress. Nested `/console/*` paths
+fall back to the SPA index. Gateway, application, provider, and operations
+management workspaces remain planned in [Operator console](console.md).
+
 ## Request path
 
 ```text
@@ -180,7 +187,7 @@ CI has separate jobs:
   `integration` with store failures configured to fail rather than skip.
 
 At this review, migration `0016` is the single Alembic head. The local suite has
-94 non-integration and 9 real-store integration tests. Counts are a snapshot, not
+96 non-integration and 9 real-store integration tests. Counts are a snapshot, not
 a contract; new behavior should add proportional coverage.
 
 ## Open work
@@ -196,8 +203,8 @@ The next architectural work is intentionally narrower than provider expansion:
 5. add application and trusted-tenant policy subjects before a generic hierarchy;
 6. connect production heartbeat/backlog alerts and complete production-like soak
    closure criteria;
-7. deploy and verify the direct-cancellation settlement fix, then add the
-   correlated diagnostics view to the console.
+7. finish the remaining Gateway, Application, Provider, and Operations console
+   workspaces after the implemented request-diagnostics phase.
 
 See `known-issues.md` for active reliability closure criteria and `roadmap.md` for
 milestone ordering.

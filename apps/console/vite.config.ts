@@ -10,6 +10,7 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes("recharts") || id.includes("d3-")) return "charts";
           if (id.includes("lucide-react")) return "icons";
+          if (id.includes("/antd/") || id.includes("@ant-design") || id.includes("/rc-")) return "ui";
           if (id.includes("react")) return "react";
         },
       },
