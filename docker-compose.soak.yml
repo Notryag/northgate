@@ -1,0 +1,100 @@
+services:
+  northgate:
+    build: .
+    environment:
+      NORTHGATE_ENVIRONMENT: test
+      NORTHGATE_HOST: 0.0.0.0
+      NORTHGATE_PORT: 8080
+      NORTHGATE_DATABASE_URL: postgresql+asyncpg://northgate:northgate@postgres:5432/northgate
+      NORTHGATE_REDIS_URL: redis://redis:6379/0
+      NORTHGATE_ROUTING_SOURCE: configuration
+      NORTHGATE_USAGE_PERSISTENCE_ENABLED: "true"
+      NORTHGATE_SETTLEMENT_OUTBOX_ENABLED: "true"
+      NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS: 5
+      NORTHGATE_GATEWAY_SLUG: soak
+      NORTHGATE_APPLICATION_KEY_SHA256: 089fdac9b11c73b490de973cf008324a315f6ef375722d45d47b497f292943cd
+      NORTHGATE_PROVIDER_BASE_URL: http://mock-primary:9090/v1
+      NORTHGATE_PROVIDER_API_KEY: primary-secret
+      NORTHGATE_PROVIDER_MAX_RETRIES: 0
+      NORTHGATE_FALLBACK_PROVIDER_NAME: backup
+      NORTHGATE_FALLBACK_PROVIDER_BASE_URL: http://mock-fallback:9090/v1
+      NORTHGATE_FALLBACK_PROVIDER_API_KEY: fallback-secret
+      NORTHGATE_CONCURRENCY_LIMIT: 2
+      NORTHGATE_CONCURRENCY_LEASE_SECONDS: 30
+      NORTHGATE_PROVIDER_RETRY_BACKOFF_MS: 0
+    ports:
+      - "127.0.0.1:18082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mock-primary:
+        condition: service_started
+      mock-fallback:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  settlement-worker:
+    build: .
+    command: ["northgate-worker", "--poll-seconds", "0.1"]
+    restart: unless-stopped
+    environment:
+      NORTHGATE_ENVIRONMENT: test
+      NORTHGATE_DATABASE_URL: postgresql+asyncpg://northgate:northgate@postgres:5432/northgate
+      NORTHGATE_REDIS_URL: redis://redis:6379/0
+      NORTHGATE_CONCURRENCY_LEASE_SECONDS: 30
+      NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: northgate
+      POSTGRES_USER: northgate
+      POSTGRES_PASSWORD: northgate
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U northgate -d northgate"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - soak_postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  mock-primary:
+    build: .
+    command: ["python", "/soak/mock_openai_provider.py"]
+    environment:
+      MOCK_PROVIDER_BIND: 0.0.0.0
+      MOCK_PROVIDER_FAIL_EVERY: 4
+      MOCK_PROVIDER_STREAM_DELAY_SECONDS: 2
+    volumes:
+      - ./scripts:/soak:ro
+
+  mock-fallback:
+    build: .
+    command: ["python", "/soak/mock_openai_provider.py"]
+    environment:
+      MOCK_PROVIDER_BIND: 0.0.0.0
+      MOCK_PROVIDER_STREAM_DELAY_SECONDS: 2
+    volumes:
+      - ./scripts:/soak:ro
+
+volumes:
+  soak_postgres:

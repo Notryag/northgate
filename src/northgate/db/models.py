@@ -203,3 +203,26 @@ class ProviderAttemptRecord(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SettlementEvent(Base):
+    __tablename__ = "settlement_events"
+    __table_args__ = (UniqueConstraint("request_id", "event_key"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    request_id: Mapped[str] = mapped_column(String(128), index=True)
+    event_key: Mapped[str] = mapped_column(String(160), default="terminal")
+    payload: Mapped[dict[str, object]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    database_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    policy_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

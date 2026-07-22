@@ -22,6 +22,16 @@ settings; README sections describe behavior and safe defaults.
   error responses.
 - Release notes must call out new required settings, default changes, and any
   setting that changes request or cost behavior.
+- `NORTHGATE_MAX_REQUEST_BODY_BYTES` bounds buffered proxy request bodies and
+  defaults to 5 MiB. Both `Content-Length` requests and chunked bodies are
+  rejected with `413 REQUEST_TOO_LARGE` once the limit is exceeded.
+- `NORTHGATE_SETTLEMENT_OUTBOX_ENABLED` defaults to `false` and requires
+  `NORTHGATE_USAGE_PERSISTENCE_ENABLED=true`. Enable it only after revision
+  `0013`, a continuously running `northgate-worker`, metrics scraping, and outbox
+  alerts are present.
+- `NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS` defaults to 15 seconds.
+  Continuous workers refresh instance-specific Redis keys, and outbox-enabled
+  readiness requires at least one non-expired key.
 
 The following material is not recoverable from PostgreSQL and must be retained
 in the deployment secret manager:
@@ -51,3 +61,14 @@ Migration revisions must include upgrade and downgrade functions so developers
 can iterate locally, even though production rollback uses restore. PostgreSQL
 transactional DDL should be preserved; a migration requiring non-transactional
 operations must document its recovery procedure in the release notes.
+
+Revision `0012` creates `settlement_events`, and revision `0013` allows multiple
+idempotent event keys per request. Both are required by this version of
+`northgate-worker` and must be applied before it starts.
+During the staged rollout the table remains empty while the feature flag is off.
+When enabled, streamed provider-response terminal events use it; other terminal
+exits remain inline until later pipeline slices migrate them.
+
+Local downgrade from `0013` to `0012` requires removing all but one settlement
+event per request first. Production rollback remains backup restore plus the prior
+application version; do not delete settlement history or downgrade in place.

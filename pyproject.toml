@@ -30,10 +30,15 @@ dev = [
 [project.scripts]
 northgate = "northgate.main:main"
 northgate-bootstrap = "northgate.bootstrap:main"
+northgate-reconcile = "northgate.reconcile:main"
 northgate-verify = "northgate.verify:main"
+northgate-worker = "northgate.settlement:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: requires migrated PostgreSQL and Redis services",
+]
 
 [tool.ruff]
 line-length = 100

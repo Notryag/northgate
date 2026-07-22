@@ -1,6 +1,8 @@
 import time
+from datetime import UTC, datetime
 from hashlib import sha256
 from hmac import compare_digest
+from typing import TYPE_CHECKING
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -15,6 +17,14 @@ from prometheus_client import (
     ProcessCollector,
     generate_latest,
 )
+from sqlalchemy import func, select
+
+from northgate.db.models import RequestRecord, SettlementEvent
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
+
+    from northgate.db.database import Database
 
 
 class Metrics:
@@ -98,6 +108,132 @@ class Metrics:
             ("provider", "adapter", "reason"),
             registry=self.registry,
         )
+        self.settlement_failures = Counter(
+            "northgate_settlement_failures_total",
+            "Settlement operations that failed and require retry or reconciliation.",
+            ("stage",),
+            registry=self.registry,
+        )
+        self.started_requests = Gauge(
+            "northgate_started_requests",
+            "Request records that have not reached a terminal outcome.",
+            registry=self.registry,
+        )
+        self.oldest_started_request_age = Gauge(
+            "northgate_oldest_started_request_age_seconds",
+            "Age of the oldest request record without a terminal outcome.",
+            registry=self.registry,
+        )
+        self.settlement_outbox_pending = Gauge(
+            "northgate_settlement_outbox_pending_events",
+            "Settlement events pending, retrying, or being processed.",
+            registry=self.registry,
+        )
+        self.oldest_settlement_outbox_pending_age = Gauge(
+            "northgate_oldest_settlement_outbox_pending_event_age_seconds",
+            "Age of the oldest settlement event that has not completed or failed.",
+            registry=self.registry,
+        )
+        self.settlement_outbox_failed = Gauge(
+            "northgate_settlement_outbox_failed_events",
+            "Settlement events that exhausted automatic retry attempts.",
+            registry=self.registry,
+        )
+        self.settlement_worker_available = Gauge(
+            "northgate_settlement_worker_available",
+            "Whether at least one settlement worker heartbeat is present.",
+            registry=self.registry,
+        )
+        self.active_concurrency_leases = Gauge(
+            "northgate_active_concurrency_leases",
+            "Active concurrency leases across gateway policy subjects.",
+            registry=self.registry,
+        )
+        self.oldest_active_concurrency_lease_age = Gauge(
+            "northgate_oldest_active_concurrency_lease_age_seconds",
+            "Age of the oldest active concurrency lease with start metadata.",
+            registry=self.registry,
+        )
+        self.operational_state_collection_failures = Counter(
+            "northgate_operational_state_collection_failures_total",
+            "Failures refreshing operational state metrics.",
+            ("store",),
+            registry=self.registry,
+        )
+
+    async def refresh_operational_state(
+        self,
+        database: "Database | None",
+        redis: "Redis | None",
+    ) -> None:
+        now = datetime.now(UTC)
+        if database is not None:
+            try:
+                async with database.sessions() as session:
+                    count, oldest = (
+                        await session.execute(
+                            select(func.count(), func.min(RequestRecord.started_at)).where(
+                                RequestRecord.outcome == "started"
+                            )
+                        )
+                    ).one()
+                    pending_count, oldest_pending = (
+                        await session.execute(
+                            select(func.count(), func.min(SettlementEvent.created_at)).where(
+                                SettlementEvent.status.in_(("pending", "retry", "processing"))
+                            )
+                        )
+                    ).one()
+                    failed_count = await session.scalar(
+                        select(func.count()).where(SettlementEvent.status == "failed")
+                    )
+                self.started_requests.set(int(count))
+                age = max(0.0, (now - oldest).total_seconds()) if oldest is not None else 0.0
+                self.oldest_started_request_age.set(age)
+                self.settlement_outbox_pending.set(int(pending_count))
+                pending_age = (
+                    max(0.0, (now - oldest_pending).total_seconds())
+                    if oldest_pending is not None
+                    else 0.0
+                )
+                self.oldest_settlement_outbox_pending_age.set(pending_age)
+                self.settlement_outbox_failed.set(int(failed_count or 0))
+            except Exception:
+                self.operational_state_collection_failures.labels(store="postgresql").inc()
+
+        if redis is not None:
+            try:
+                now_ms = int(now.timestamp() * 1000)
+                active_count = 0
+                oldest_started_ms: int | None = None
+                async for key in redis.scan_iter(match="northgate:policy:*:concurrency"):
+                    active_ids = await redis.zrangebyscore(key, now_ms + 1, "+inf")
+                    active_count += len(active_ids)
+                    if not active_ids:
+                        continue
+                    started_key = key + b":started" if isinstance(key, bytes) else f"{key}:started"
+                    for value in await redis.hmget(started_key, active_ids):
+                        if value is None:
+                            continue
+                        started_ms = int(value)
+                        if oldest_started_ms is None or started_ms < oldest_started_ms:
+                            oldest_started_ms = started_ms
+                self.active_concurrency_leases.set(active_count)
+                lease_age = (
+                    max(0.0, (now_ms - oldest_started_ms) / 1000)
+                    if oldest_started_ms is not None
+                    else 0.0
+                )
+                self.oldest_active_concurrency_lease_age.set(lease_age)
+                worker_available = False
+                async for _key in redis.scan_iter(
+                    match="northgate:settlement:worker:heartbeat:*", count=10
+                ):
+                    worker_available = True
+                    break
+                self.settlement_worker_available.set(1 if worker_available else 0)
+            except Exception:
+                self.operational_state_collection_failures.labels(store="redis").inc()
 
     def observe_http(
         self,
@@ -154,7 +290,7 @@ class Metrics:
             )
 
 
-def metrics_response(request: Request) -> Response:
+async def metrics_response(request: Request) -> Response:
     settings = request.app.state.settings
     expected = settings.metrics_key_sha256
     if expected is not None and expected.get_secret_value():
@@ -167,6 +303,10 @@ def metrics_response(request: Request) -> Response:
         if not compare_digest(actual, expected.get_secret_value()):
             return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
     metrics: Metrics = request.app.state.metrics
+    await metrics.refresh_operational_state(
+        request.app.state.database,
+        request.app.state.redis,
+    )
     return Response(
         content=generate_latest(metrics.registry),
         headers={"Content-Type": CONTENT_TYPE_LATEST},

@@ -1,0 +1,74 @@
+groups:
+  - name: northgate-settlement
+    rules:
+      - alert: NorthgateSettlementFailure
+        expr: increase(northgate_settlement_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Northgate settlement failed
+          description: Settlement stage {{ $labels.stage }} requires reconciliation.
+
+      - alert: NorthgateSettlementOutboxBacklog
+        expr: northgate_oldest_settlement_outbox_pending_event_age_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Northgate settlement outbox is delayed
+          description: The oldest pending settlement event is {{ $value }} seconds old.
+
+      - alert: NorthgateSettlementWorkerUnavailable
+        expr: northgate_settlement_worker_available == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Northgate settlement worker is unavailable
+          description: No live settlement worker heartbeat is visible.
+
+      - alert: NorthgateSettlementOutboxFailed
+        expr: northgate_settlement_outbox_failed_events > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Northgate settlement events exhausted retries
+          description: Northgate has {{ $value }} failed settlement events.
+
+      - alert: NorthgateStartedRequestStale
+        expr: northgate_oldest_started_request_age_seconds > 600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Northgate has a stale started request
+          description: The oldest started request is {{ $value }} seconds old.
+
+      - alert: NorthgateConcurrencyLeaseStale
+        expr: northgate_oldest_active_concurrency_lease_age_seconds > 600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Northgate has a stale concurrency lease
+          description: The oldest active concurrency lease is {{ $value }} seconds old.
+
+      - alert: NorthgateOperationalMetricsUnavailable
+        expr: increase(northgate_operational_state_collection_failures_total[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Northgate operational metrics collection failed
+          description: Metrics refresh failed for {{ $labels.store }}.
+
+      - alert: NorthgateConcurrencyRejections
+        expr: increase(northgate_gateway_errors_total{code="CONCURRENCY_LIMIT_EXCEEDED"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Northgate is rejecting traffic at its concurrency limit
+          description: Gateway admission rejected {{ $value }} requests in five minutes.

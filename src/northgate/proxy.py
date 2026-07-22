@@ -1,12 +1,9 @@
 import asyncio
-import json
-import math
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from hmac import compare_digest
 from uuid import UUID
 
 import httpx
@@ -35,16 +32,29 @@ from northgate.provider_adapters import (
     AdapterUnavailableError,
     provider_adapter,
 )
+from northgate.proxy_input import (
+    RequestBodyTooLargeError,
+    read_proxy_request_input,
+)
+from northgate.proxy_input import (
+    estimated_tokens as estimate_request_tokens,
+)
+from northgate.proxy_input import (
+    request_metadata as parse_request_metadata,
+)
 from northgate.route_health import RouteHealthEngine, RouteHealthUnavailableError
+from northgate.route_planning import (
+    plan_routes,
+    resolve_routes,
+    validate_primary_route,
+)
 from northgate.routing import (
-    DatabaseRouteResolver,
     ForbiddenGatewayError,
     InvalidApplicationKeyError,
     ResolvedRoute,
     RouteUnavailableError,
-    configured_routes,
-    select_routes,
 )
+from northgate.settlement import SettlementCoordinator
 from northgate.tracing import Tracing, add_span_event
 from northgate.usage import (
     DuplicateRequestError,
@@ -55,11 +65,6 @@ from northgate.usage import (
 
 logger = structlog.get_logger()
 
-_MAX_METADATA_BYTES = 8 * 1024
-_MAX_METADATA_KEYS = 32
-_MAX_METADATA_KEY_LENGTH = 64
-_MAX_METADATA_VALUE_LENGTH = 256
-_FORWARDED_REQUEST_HEADERS = {"accept", "content-type"}
 _FORWARDED_RESPONSE_HEADERS = {
     "cache-control",
     "content-encoding",
@@ -104,29 +109,6 @@ def _error(
     )
 
 
-def _bearer_credential(request: Request) -> str | None:
-    scheme, separator, credential = request.headers.get("authorization", "").partition(" ")
-    if not separator or scheme.lower() != "bearer" or not credential:
-        return None
-    return credential
-
-
-def _configured_application_key_is_valid(credential: str, settings: Settings) -> bool:
-    expected = settings.application_key_sha256
-    if expected is None or not expected.get_secret_value():
-        return False
-    actual = sha256(credential.encode()).hexdigest()
-    return compare_digest(actual, expected.get_secret_value())
-
-
-def _forwarded_request_headers(request: Request) -> dict[str, str]:
-    return {
-        name: value
-        for name, value in request.headers.items()
-        if name.lower() in _FORWARDED_REQUEST_HEADERS
-    }
-
-
 def _downstream_headers(
     response: httpx.Response,
     route: ResolvedRoute,
@@ -168,6 +150,7 @@ def _route_label(route: ResolvedRoute) -> str:
 async def _settle_safely(
     recorder: UsageRecorder,
     *,
+    metrics: Metrics | None,
     request_id: str,
     outcome: str,
     status_code: int | None,
@@ -193,7 +176,96 @@ async def _settle_safely(
             price_id=price_id,
         )
     except Exception:
+        if metrics is not None:
+            metrics.settlement_failures.labels(stage="request").inc()
         await logger.aexception("usage_settlement_failed", northgate_request_id=request_id)
+
+
+async def _enqueue_request_settlement(
+    coordinator: SettlementCoordinator | None,
+    *,
+    policy_engine: PolicyEngine | None,
+    policy_lease: PolicyLease | None,
+    metrics: Metrics | None,
+    request_id: str,
+    outcome: str,
+    status_code: int | None,
+    provider_request_id: str | None,
+    started_at: float,
+    usage: UsageResult,
+    cost_microusd: int | None,
+    first_token_ms: int | None,
+    final_route: ResolvedRoute,
+    price_id: UUID | None,
+    attempt_id: UUID | None = None,
+    attempt_started_at: float | None = None,
+    attempt_outcome: str | None = None,
+    attempt_usage: UsageResult | None = None,
+    attempt_cost_microusd: int | None = None,
+) -> bool:
+    if coordinator is None:
+        return False
+    payload: dict[str, object] = {
+        "request": {
+            "outcome": outcome,
+            "status_code": status_code,
+            "provider_request_id": provider_request_id,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "cached_prompt_tokens": usage.cached_prompt_tokens,
+            "cost_microusd": cost_microusd,
+            "route_id": str(final_route.route_id) if final_route.route_id is not None else None,
+            "provider": final_route.provider,
+            "price_id": str(price_id) if price_id is not None else None,
+            "latency_ms": round((time.perf_counter() - started_at) * 1000),
+            "first_token_ms": first_token_ms,
+        },
+        "attempt": (
+            {
+                "id": str(attempt_id),
+                "outcome": attempt_outcome or outcome,
+                "status_code": status_code,
+                "provider_request_id": provider_request_id,
+                "prompt_tokens": (attempt_usage or usage).prompt_tokens,
+                "completion_tokens": (attempt_usage or usage).completion_tokens,
+                "total_tokens": (attempt_usage or usage).total_tokens,
+                "cached_prompt_tokens": (attempt_usage or usage).cached_prompt_tokens,
+                "cost_microusd": attempt_cost_microusd,
+                "latency_ms": round(
+                    (time.perf_counter() - (attempt_started_at or started_at)) * 1000
+                ),
+            }
+            if attempt_id is not None
+            else None
+        ),
+        "policy": (
+            {
+                "gateway_key": policy_lease.gateway_key,
+                "token_day": policy_lease.token_day,
+                "spend_day": policy_lease.spend_day,
+                "spend_month": policy_lease.spend_month,
+                "actual_tokens": usage.total_tokens,
+                "actual_cost_microusd": cost_microusd,
+            }
+            if policy_lease is not None
+            else None
+        ),
+    }
+    try:
+        event_id = await coordinator.enqueue(request_id=request_id, payload=payload)
+    except Exception:
+        if metrics is not None:
+            metrics.settlement_failures.labels(stage="outbox_enqueue").inc()
+        await logger.aexception(
+            "settlement_outbox_enqueue_failed",
+            northgate_request_id=request_id,
+        )
+        return False
+    if policy_engine is not None and policy_lease is not None:
+        await policy_engine.stop_renewal(policy_lease)
+    await coordinator.process(event_id)
+    return True
 
 
 @dataclass
@@ -286,7 +358,84 @@ async def _settle_attempt_safely(
             cost_microusd=cost_microusd,
         )
     except Exception:
+        if metrics is not None:
+            metrics.settlement_failures.labels(stage="attempt").inc()
         await logger.aexception("provider_attempt_settlement_failed", attempt_id=str(attempt_id))
+
+
+async def _settle_attempt_with_outbox(
+    coordinator: SettlementCoordinator | None,
+    recorder: UsageRecorder | None,
+    *,
+    metrics: Metrics | None,
+    route: ResolvedRoute,
+    request_id: str,
+    attempt_id: UUID | None,
+    outcome: str,
+    status_code: int | None,
+    provider_request_id: str | None,
+    started_at: float,
+    usage: UsageResult,
+    cost_microusd: int | None,
+) -> None:
+    if coordinator is not None and recorder is not None and attempt_id is not None:
+        payload: dict[str, object] = {
+            "request": None,
+            "attempt": {
+                "id": str(attempt_id),
+                "outcome": outcome,
+                "status_code": status_code,
+                "provider_request_id": provider_request_id,
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+                "cached_prompt_tokens": usage.cached_prompt_tokens,
+                "cost_microusd": cost_microusd,
+                "latency_ms": round((time.perf_counter() - started_at) * 1000),
+            },
+            "policy": None,
+        }
+        try:
+            event_id = await coordinator.enqueue(
+                request_id=request_id,
+                event_key=f"attempt:{attempt_id}",
+                payload=payload,
+            )
+        except Exception:
+            if metrics is not None:
+                metrics.settlement_failures.labels(stage="outbox_enqueue").inc()
+            await logger.aexception(
+                "attempt_settlement_outbox_enqueue_failed",
+                northgate_request_id=request_id,
+                attempt_id=str(attempt_id),
+            )
+        else:
+            await _settle_attempt_safely(
+                None,
+                metrics=metrics,
+                route=route,
+                attempt_id=attempt_id,
+                outcome=outcome,
+                status_code=status_code,
+                provider_request_id=provider_request_id,
+                started_at=started_at,
+                usage=usage,
+                cost_microusd=cost_microusd,
+            )
+            await coordinator.process(event_id)
+            return
+    await _settle_attempt_safely(
+        recorder,
+        metrics=metrics,
+        route=route,
+        attempt_id=attempt_id,
+        outcome=outcome,
+        status_code=status_code,
+        provider_request_id=provider_request_id,
+        started_at=started_at,
+        usage=usage,
+        cost_microusd=cost_microusd,
+    )
 
 
 async def _consume_retryable_response(
@@ -344,6 +493,232 @@ async def _record_route_health(
         await engine.record_success(route_key=route_key, token=token, now_ms=now_ms)
 
 
+@dataclass
+class StreamFinalization:
+    response: httpx.Response
+    recorder: UsageRecorder | None
+    request_id: str
+    started_at: float
+    policy_engine: PolicyEngine | None
+    policy_lease: PolicyLease | None
+    price: PriceQuote | None
+    route: ResolvedRoute
+    attempt_id: UUID | None
+    attempt_started_at: float
+    totals: AttemptTotals
+    route_health_engine: RouteHealthEngine | None
+    route_health_key: str
+    route_health_token: str
+    exact_cache: ExactCache | None
+    cache_key: str | None
+    cache_ttl_seconds: int | None
+    metrics: Metrics | None
+    settlement_coordinator: SettlementCoordinator | None
+
+    async def finish(
+        self,
+        *,
+        accumulator: UsageAccumulator,
+        outcome: str,
+        transport_failed: bool,
+        completed: bool,
+        cache_body: bytearray | None,
+    ) -> None:
+        try:
+            await self.response.aclose()
+        except Exception:
+            if self.metrics is not None:
+                self.metrics.settlement_failures.labels(stage="upstream_close").inc()
+            await logger.aexception(
+                "upstream_close_failed",
+                northgate_request_id=self.request_id,
+            )
+        if (
+            completed
+            and 200 <= self.response.status_code < 300
+            and cache_body is not None
+            and self.exact_cache is not None
+            and self.cache_key is not None
+            and self.cache_ttl_seconds is not None
+        ):
+            try:
+                await self.exact_cache.set(
+                    self.cache_key,
+                    CacheEntry(
+                        status_code=self.response.status_code,
+                        headers=_cached_response_headers(self.response),
+                        body=bytes(cache_body),
+                        route_key=self.route_health_key,
+                    ),
+                    self.cache_ttl_seconds,
+                )
+                if self.metrics is not None:
+                    self.metrics.cache_writes.labels(result="stored").inc()
+            except Exception:
+                if self.metrics is not None:
+                    self.metrics.cache_writes.labels(result="error").inc()
+                    self.metrics.settlement_failures.labels(stage="cache").inc()
+                await logger.awarning(
+                    "exact_cache_write_failed",
+                    northgate_request_id=self.request_id,
+                )
+        elif (
+            completed
+            and 200 <= self.response.status_code < 300
+            and self.cache_key is not None
+            and cache_body is None
+            and self.metrics is not None
+        ):
+            self.metrics.cache_writes.labels(result="oversized").inc()
+        if outcome != "client_disconnected":
+            health_failed = transport_failed or (
+                self.response.status_code in self.route.health_failure_status_codes
+            )
+            try:
+                await _record_route_health(
+                    self.route_health_engine,
+                    self.route,
+                    route_key=self.route_health_key,
+                    token=self.route_health_token,
+                    failed=health_failed,
+                )
+            except Exception:
+                if self.metrics is not None:
+                    self.metrics.settlement_failures.labels(stage="route_health").inc()
+                await logger.aexception(
+                    "route_health_settlement_failed",
+                    route=self.route_health_key,
+                    northgate_request_id=self.request_id,
+                )
+        usage = accumulator.result()
+        if outcome == "client_disconnected" and usage.total_tokens is None:
+            self.totals.ambiguous = True
+        cost_microusd = (
+            self.price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
+            if self.price is not None
+            else None
+        )
+        self.totals.add(usage, cost_microusd)
+        aggregate_usage = self.totals.usage()
+        aggregate_cost = self.totals.cost_microusd if self.totals.has_cost else None
+        if self.settlement_coordinator is not None and self.recorder is not None:
+            payload: dict[str, object] = {
+                "request": {
+                    "outcome": outcome,
+                    "status_code": self.response.status_code,
+                    "provider_request_id": self.response.headers.get("x-request-id"),
+                    "prompt_tokens": aggregate_usage.prompt_tokens,
+                    "completion_tokens": aggregate_usage.completion_tokens,
+                    "total_tokens": aggregate_usage.total_tokens,
+                    "cached_prompt_tokens": aggregate_usage.cached_prompt_tokens,
+                    "cost_microusd": aggregate_cost,
+                    "route_id": str(self.route.route_id)
+                    if self.route.route_id is not None
+                    else None,
+                    "provider": self.route.provider,
+                    "price_id": (
+                        str(self.price.price_id)
+                        if self.price is not None and self.price.price_id is not None
+                        else None
+                    ),
+                    "latency_ms": round((time.perf_counter() - self.started_at) * 1000),
+                    "first_token_ms": accumulator.first_token_ms,
+                },
+                "attempt": (
+                    {
+                        "id": str(self.attempt_id),
+                        "outcome": outcome,
+                        "status_code": self.response.status_code,
+                        "provider_request_id": self.response.headers.get("x-request-id"),
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "total_tokens": usage.total_tokens,
+                        "cached_prompt_tokens": usage.cached_prompt_tokens,
+                        "cost_microusd": cost_microusd,
+                        "latency_ms": round((time.perf_counter() - self.attempt_started_at) * 1000),
+                    }
+                    if self.attempt_id is not None
+                    else None
+                ),
+                "policy": (
+                    {
+                        "gateway_key": self.policy_lease.gateway_key,
+                        "token_day": self.policy_lease.token_day,
+                        "spend_day": self.policy_lease.spend_day,
+                        "spend_month": self.policy_lease.spend_month,
+                        "actual_tokens": (
+                            None if self.totals.ambiguous else aggregate_usage.total_tokens
+                        ),
+                        "actual_cost_microusd": (None if self.totals.ambiguous else aggregate_cost),
+                    }
+                    if self.policy_lease is not None
+                    else None
+                ),
+            }
+            try:
+                event_id = await self.settlement_coordinator.enqueue(
+                    request_id=self.request_id,
+                    payload=payload,
+                )
+            except Exception:
+                if self.metrics is not None:
+                    self.metrics.settlement_failures.labels(stage="outbox_enqueue").inc()
+                await logger.aexception(
+                    "settlement_outbox_enqueue_failed",
+                    northgate_request_id=self.request_id,
+                )
+            else:
+                await _settle_attempt_safely(
+                    None,
+                    metrics=self.metrics,
+                    route=self.route,
+                    attempt_id=self.attempt_id,
+                    outcome=outcome,
+                    status_code=self.response.status_code,
+                    provider_request_id=self.response.headers.get("x-request-id"),
+                    started_at=self.attempt_started_at,
+                    usage=usage,
+                    cost_microusd=cost_microusd,
+                )
+                if self.policy_engine is not None and self.policy_lease is not None:
+                    await self.policy_engine.stop_renewal(self.policy_lease)
+                await self.settlement_coordinator.process(event_id)
+                return
+        await _settle_attempt_safely(
+            self.recorder,
+            metrics=self.metrics,
+            route=self.route,
+            attempt_id=self.attempt_id,
+            outcome=outcome,
+            status_code=self.response.status_code,
+            provider_request_id=self.response.headers.get("x-request-id"),
+            started_at=self.attempt_started_at,
+            usage=usage,
+            cost_microusd=cost_microusd,
+        )
+        if self.recorder is not None:
+            await _settle_safely(
+                self.recorder,
+                metrics=self.metrics,
+                request_id=self.request_id,
+                outcome=outcome,
+                status_code=self.response.status_code,
+                provider_request_id=self.response.headers.get("x-request-id"),
+                started_at=self.started_at,
+                usage=aggregate_usage,
+                cost_microusd=aggregate_cost,
+                first_token_ms=accumulator.first_token_ms,
+                final_route=self.route,
+                price_id=self.price.price_id if self.price is not None else None,
+            )
+        if self.policy_engine is not None and self.policy_lease is not None:
+            await self.policy_engine.settle(
+                self.policy_lease,
+                None if self.totals.ambiguous else aggregate_usage.total_tokens,
+                None if self.totals.ambiguous else aggregate_cost,
+            )
+
+
 async def _response_body(
     response: httpx.Response,
     *,
@@ -365,12 +740,34 @@ async def _response_body(
     cache_ttl_seconds: int | None,
     cache_max_entry_bytes: int,
     metrics: Metrics | None,
+    settlement_coordinator: SettlementCoordinator | None,
 ) -> AsyncIterator[bytes]:
     accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
     outcome = "succeeded" if response.status_code < 400 else "provider_error"
     transport_failed = False
     completed = False
     cache_body: bytearray | None = bytearray() if cache_key is not None else None
+    finalization = StreamFinalization(
+        response=response,
+        recorder=recorder,
+        request_id=request_id,
+        started_at=started_at,
+        policy_engine=policy_engine,
+        policy_lease=policy_lease,
+        price=price,
+        route=route,
+        attempt_id=attempt_id,
+        attempt_started_at=attempt_started_at,
+        totals=totals,
+        route_health_engine=route_health_engine,
+        route_health_key=route_health_key,
+        route_health_token=route_health_token,
+        exact_cache=exact_cache,
+        cache_key=cache_key,
+        cache_ttl_seconds=cache_ttl_seconds,
+        metrics=metrics,
+        settlement_coordinator=settlement_coordinator,
+    )
     try:
         if response.is_stream_consumed:
             accumulator.observe(response.content)
@@ -406,182 +803,15 @@ async def _response_body(
         totals.ambiguous = True
         raise
     finally:
-        await response.aclose()
-        if (
-            completed
-            and 200 <= response.status_code < 300
-            and cache_body is not None
-            and exact_cache is not None
-            and cache_key is not None
-            and cache_ttl_seconds is not None
-        ):
-            try:
-                await exact_cache.set(
-                    cache_key,
-                    CacheEntry(
-                        status_code=response.status_code,
-                        headers=_cached_response_headers(response),
-                        body=bytes(cache_body),
-                        route_key=route_health_key,
-                    ),
-                    cache_ttl_seconds,
-                )
-                if metrics is not None:
-                    metrics.cache_writes.labels(result="stored").inc()
-            except CacheUnavailableError:
-                if metrics is not None:
-                    metrics.cache_writes.labels(result="error").inc()
-                await logger.awarning(
-                    "exact_cache_write_failed",
-                    northgate_request_id=request_id,
-                )
-        elif (
-            completed
-            and 200 <= response.status_code < 300
-            and cache_key is not None
-            and cache_body is None
-            and metrics is not None
-        ):
-            metrics.cache_writes.labels(result="oversized").inc()
-        if outcome != "client_disconnected":
-            health_failed = transport_failed or (
-                response.status_code in route.health_failure_status_codes
-            )
-            try:
-                await _record_route_health(
-                    route_health_engine,
-                    route,
-                    route_key=route_health_key,
-                    token=route_health_token,
-                    failed=health_failed,
-                )
-            except RouteHealthUnavailableError:
-                await logger.aexception(
-                    "route_health_settlement_failed",
-                    route=route_health_key,
-                    northgate_request_id=request_id,
-                )
-        usage = accumulator.result()
-        if outcome == "client_disconnected" and usage.total_tokens is None:
-            totals.ambiguous = True
-        cost_microusd = (
-            price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
-            if price is not None
-            else None
-        )
-        totals.add(usage, cost_microusd)
         await _finish_during_cancellation(
-            _settle_attempt_safely(
-                recorder,
-                metrics=metrics,
-                route=route,
-                attempt_id=attempt_id,
+            finalization.finish(
+                accumulator=accumulator,
                 outcome=outcome,
-                status_code=response.status_code,
-                provider_request_id=response.headers.get("x-request-id"),
-                started_at=attempt_started_at,
-                usage=usage,
-                cost_microusd=cost_microusd,
+                transport_failed=transport_failed,
+                completed=completed,
+                cache_body=cache_body,
             )
         )
-        aggregate_usage = totals.usage()
-        aggregate_cost = totals.cost_microusd if totals.has_cost else None
-        if recorder is not None:
-            await _finish_during_cancellation(
-                _settle_safely(
-                    recorder,
-                    request_id=request_id,
-                    outcome=outcome,
-                    status_code=response.status_code,
-                    provider_request_id=response.headers.get("x-request-id"),
-                    started_at=started_at,
-                    usage=aggregate_usage,
-                    cost_microusd=aggregate_cost,
-                    first_token_ms=accumulator.first_token_ms,
-                    final_route=route,
-                    price_id=price.price_id if price is not None else None,
-                )
-            )
-        if policy_engine is not None and policy_lease is not None:
-            await _finish_during_cancellation(
-                policy_engine.settle(
-                    policy_lease,
-                    None if totals.ambiguous else aggregate_usage.total_tokens,
-                    None if totals.ambiguous else aggregate_cost,
-                )
-            )
-
-
-def _request_model(body: bytes) -> str | None:
-    try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    model = payload.get("model")
-    return model if isinstance(model, str) else None
-
-
-def _request_metadata(request: Request, route: ResolvedRoute) -> dict[str, str] | None:
-    encoded = request.headers.get("northgate-metadata")
-    if encoded is None:
-        return {}
-    if len(encoded.encode("utf-8")) > _MAX_METADATA_BYTES:
-        return None
-    try:
-        metadata = json.loads(encoded)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(metadata, dict) or len(metadata) > _MAX_METADATA_KEYS:
-        return None
-    for key, value in metadata.items():
-        if (
-            not isinstance(key, str)
-            or not isinstance(value, str)
-            or not key
-            or len(key) > _MAX_METADATA_KEY_LENGTH
-            or len(value) > _MAX_METADATA_VALUE_LENGTH
-            or key.startswith("northgate.")
-            or key not in route.allowed_metadata_keys
-        ):
-            return None
-    return metadata
-
-
-def _estimated_tokens(body: bytes, settings: Settings) -> tuple[int, int]:
-    prompt_estimate = math.ceil(len(body) / 3)
-    try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return prompt_estimate, settings.policy_default_max_output_tokens
-    configured_max = payload.get("max_completion_tokens", payload.get("max_tokens"))
-    output_estimate = (
-        configured_max
-        if isinstance(configured_max, int)
-        and not isinstance(configured_max, bool)
-        and configured_max > 0
-        else settings.policy_default_max_output_tokens
-    )
-    return prompt_estimate, output_estimate
-
-
-async def _resolve_routes(
-    request: Request,
-    gateway_slug: str,
-    settings: Settings,
-) -> list[ResolvedRoute]:
-    credential = _bearer_credential(request)
-    if credential is None:
-        raise InvalidApplicationKeyError
-
-    if settings.routing_source == "database":
-        resolver: DatabaseRouteResolver = request.app.state.route_resolver
-        return await resolver.resolve(credential, gateway_slug)
-
-    if not _configured_application_key_is_valid(credential, settings):
-        raise InvalidApplicationKeyError
-    if gateway_slug != settings.gateway_slug:
-        raise ForbiddenGatewayError
-    return configured_routes(settings)
 
 
 async def proxy_chat_completions(
@@ -592,8 +822,23 @@ async def proxy_chat_completions(
     started_at = time.perf_counter()
     request_id: str = request.state.request_id
 
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            request_too_large = int(content_length) > settings.max_request_body_bytes
+        except ValueError:
+            request_too_large = False
+        if request_too_large:
+            return _error(
+                request,
+                status_code=413,
+                code="REQUEST_TOO_LARGE",
+                message="Request body is too large",
+                retryable=False,
+            )
+
     try:
-        routes = await _resolve_routes(request, gateway_slug, settings)
+        routes = await resolve_routes(request, gateway_slug, settings)
     except InvalidApplicationKeyError:
         return _error(
             request,
@@ -623,7 +868,7 @@ async def proxy_chat_completions(
         )
 
     route = routes[0]
-    request_metadata = _request_metadata(request, route)
+    request_metadata = parse_request_metadata(request, route)
     if request_metadata is None:
         return _error(
             request,
@@ -632,7 +877,7 @@ async def proxy_chat_completions(
             message="Invalid request metadata",
             retryable=False,
         )
-    routes = select_routes(routes, request_metadata, request_id)
+    routes = plan_routes(routes, request_metadata, request_id)
     if not routes:
         return _error(
             request,
@@ -643,11 +888,24 @@ async def proxy_chat_completions(
         )
     route = routes[0]
 
-    body = await request.body()
-    model = _request_model(body)
     try:
-        for candidate in routes:
-            provider_adapter(candidate.adapter).validate(candidate, model)
+        proxy_input = await read_proxy_request_input(
+            request,
+            metadata=request_metadata,
+            max_body_bytes=settings.max_request_body_bytes,
+        )
+    except RequestBodyTooLargeError:
+        return _error(
+            request,
+            status_code=413,
+            code="REQUEST_TOO_LARGE",
+            message="Request body is too large",
+            retryable=False,
+        )
+    body = proxy_input.body
+    model = proxy_input.model
+    try:
+        validate_primary_route(route, model)
     except AdapterRequestError as exc:
         return _error(
             request,
@@ -669,7 +927,7 @@ async def proxy_chat_completions(
             retryable=False,
         )
 
-    forwarded_request_headers = _forwarded_request_headers(request)
+    forwarded_request_headers = proxy_input.forwarded_headers
     cache_request_headers = dict(forwarded_request_headers)
     policy_engine: PolicyEngine | None = request.app.state.policy_engine
     recorder: UsageRecorder | None = request.app.state.usage_recorder
@@ -789,21 +1047,40 @@ async def proxy_chat_completions(
                     message="Request accounting is unavailable",
                     retryable=True,
                 )
-            await _settle_safely(
-                recorder,
+            cache_usage = UsageResult(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+            durable_cache_settlement = await _enqueue_request_settlement(
+                request.app.state.settlement_coordinator,
+                policy_engine=policy_engine,
+                policy_lease=cache_policy_lease,
+                metrics=metrics,
                 request_id=request_id,
                 outcome="cache_hit",
                 status_code=cache_entry.status_code,
                 provider_request_id=None,
                 started_at=started_at,
-                usage=UsageResult(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                usage=cache_usage,
                 cost_microusd=0,
                 first_token_ms=round((time.perf_counter() - started_at) * 1000),
                 final_route=cached_route,
                 price_id=None,
             )
-        if policy_engine is not None and cache_policy_lease is not None:
-            await policy_engine.settle(cache_policy_lease, 0, 0)
+            if not durable_cache_settlement:
+                await _settle_safely(
+                    recorder,
+                    metrics=metrics,
+                    request_id=request_id,
+                    outcome="cache_hit",
+                    status_code=cache_entry.status_code,
+                    provider_request_id=None,
+                    started_at=started_at,
+                    usage=cache_usage,
+                    cost_microusd=0,
+                    first_token_ms=round((time.perf_counter() - started_at) * 1000),
+                    final_route=cached_route,
+                    price_id=None,
+                )
+                if policy_engine is not None and cache_policy_lease is not None:
+                    await policy_engine.settle(cache_policy_lease, 0, 0)
         cache_headers = dict(cache_entry.headers)
         cache_headers.update(
             {
@@ -842,7 +1119,7 @@ async def proxy_chat_completions(
             retryable=False,
         )
 
-    estimated_input_tokens, estimated_output_tokens = _estimated_tokens(body, settings)
+    estimated_input_tokens, estimated_output_tokens = estimate_request_tokens(body, settings)
     possible_attempts = sum(candidate.max_retries + 1 for candidate in routes)
     estimated_cost_microusd = sum(
         (price.cost(estimated_input_tokens, estimated_output_tokens) if price is not None else 0)
@@ -955,11 +1232,35 @@ async def proxy_chat_completions(
     last_price = price
     last_failure = "provider_unavailable"
     provider_attempt_count = 0
+    invalid_routes: set[str] = set()
 
     for plan_index, (candidate, candidate_price) in enumerate(attempt_plan):
         has_next = plan_index + 1 < len(attempt_plan)
         health_route_key = _route_health_key(candidate)
         health_token = f"{request_id}:{plan_index + 1}"
+        if health_route_key in invalid_routes:
+            continue
+        try:
+            provider_adapter(candidate.adapter).validate(candidate, model)
+        except (AdapterRequestError, AdapterUnavailableError):
+            # The selected primary is validated before admission. A bad fallback
+            # is isolated here so it cannot block an otherwise healthy primary.
+            invalid_routes.add(health_route_key)
+            last_route = candidate
+            last_price = candidate_price
+            last_failure = "provider_unavailable"
+            if metrics is not None:
+                metrics.route_skips.labels(
+                    provider=candidate.provider,
+                    adapter=candidate.adapter,
+                    reason="invalid_configuration",
+                ).inc()
+            await logger.aexception(
+                "provider_route_invalid",
+                route=health_route_key,
+                northgate_request_id=request_id,
+            )
+            continue
         if candidate.health_failure_threshold > 0:
             if route_health_engine is None:
                 health_error = True
@@ -975,32 +1276,53 @@ async def proxy_chat_completions(
                 except RouteHealthUnavailableError:
                     health_error = True
             if health_error:
+                health_usage = totals.usage()
+                health_cost = (
+                    None if totals.ambiguous else totals.cost_microusd if totals.has_cost else None
+                )
+                durable_health_settlement = False
                 if recorder is not None:
-                    await _settle_safely(
-                        recorder,
+                    durable_health_settlement = await _enqueue_request_settlement(
+                        request.app.state.settlement_coordinator,
+                        policy_engine=policy_engine,
+                        policy_lease=policy_lease,
+                        metrics=metrics,
                         request_id=request_id,
                         outcome="route_health_unavailable",
                         status_code=503,
                         provider_request_id=None,
                         started_at=started_at,
-                        usage=totals.usage(),
-                        cost_microusd=totals.cost_microusd if totals.has_cost else None,
+                        usage=health_usage,
+                        cost_microusd=health_cost,
                         first_token_ms=None,
                         final_route=candidate,
                         price_id=(
                             candidate_price.price_id if candidate_price is not None else None
                         ),
                     )
-                if policy_engine is not None and policy_lease is not None:
-                    await policy_engine.settle(
-                        policy_lease,
-                        None if totals.ambiguous else totals.usage().total_tokens,
-                        None
-                        if totals.ambiguous
-                        else totals.cost_microusd
-                        if totals.has_cost
-                        else None,
-                    )
+                    if not durable_health_settlement:
+                        await _settle_safely(
+                            recorder,
+                            metrics=metrics,
+                            request_id=request_id,
+                            outcome="route_health_unavailable",
+                            status_code=503,
+                            provider_request_id=None,
+                            started_at=started_at,
+                            usage=health_usage,
+                            cost_microusd=health_cost,
+                            first_token_ms=None,
+                            final_route=candidate,
+                            price_id=(
+                                candidate_price.price_id if candidate_price is not None else None
+                            ),
+                        )
+                if (
+                    not durable_health_settlement
+                    and policy_engine is not None
+                    and policy_lease is not None
+                ):
+                    await policy_engine.settle(policy_lease, health_usage.total_tokens, health_cost)
                 return _error(
                     request,
                     status_code=503,
@@ -1052,21 +1374,49 @@ async def proxy_chat_completions(
                     northgate_request_id=request_id,
                     attempt_index=attempt_index,
                 )
-                await _settle_safely(
-                    recorder,
+                attempt_start_usage = totals.usage()
+                attempt_start_cost = (
+                    None if totals.ambiguous else totals.cost_microusd if totals.has_cost else None
+                )
+                durable_attempt_start_settlement = await _enqueue_request_settlement(
+                    request.app.state.settlement_coordinator,
+                    policy_engine=policy_engine,
+                    policy_lease=policy_lease,
+                    metrics=metrics,
                     request_id=request_id,
                     outcome="internal_failure",
                     status_code=503,
                     provider_request_id=None,
                     started_at=started_at,
-                    usage=totals.usage(),
-                    cost_microusd=totals.cost_microusd if totals.has_cost else None,
+                    usage=attempt_start_usage,
+                    cost_microusd=attempt_start_cost,
                     first_token_ms=None,
                     final_route=candidate,
                     price_id=candidate_price.price_id if candidate_price is not None else None,
                 )
-                if policy_engine is not None and policy_lease is not None:
-                    await policy_engine.settle(policy_lease, 0, 0)
+                if not durable_attempt_start_settlement:
+                    await _settle_safely(
+                        recorder,
+                        metrics=metrics,
+                        request_id=request_id,
+                        outcome="internal_failure",
+                        status_code=503,
+                        provider_request_id=None,
+                        started_at=started_at,
+                        usage=attempt_start_usage,
+                        cost_microusd=attempt_start_cost,
+                        first_token_ms=None,
+                        final_route=candidate,
+                        price_id=(
+                            candidate_price.price_id if candidate_price is not None else None
+                        ),
+                    )
+                    if policy_engine is not None and policy_lease is not None:
+                        await policy_engine.settle(
+                            policy_lease,
+                            attempt_start_usage.total_tokens,
+                            attempt_start_cost,
+                        )
                 return _error(
                     request,
                     status_code=503,
@@ -1087,10 +1437,12 @@ async def proxy_chat_completions(
         except httpx.TimeoutException:
             totals.ambiguous = True
             last_failure = "provider_timeout"
-            await _settle_attempt_safely(
+            await _settle_attempt_with_outbox(
+                request.app.state.settlement_coordinator,
                 recorder,
                 metrics=metrics,
                 route=candidate,
+                request_id=request_id,
                 attempt_id=attempt_id,
                 outcome="timeout_ambiguous",
                 status_code=None,
@@ -1114,10 +1466,12 @@ async def proxy_chat_completions(
             if not is_connection_failure:
                 totals.ambiguous = True
             last_failure = "provider_unavailable"
-            await _settle_attempt_safely(
+            await _settle_attempt_with_outbox(
+                request.app.state.settlement_coordinator,
                 recorder,
                 metrics=metrics,
                 route=candidate,
+                request_id=request_id,
                 attempt_id=attempt_id,
                 outcome="connection_error" if is_connection_failure else "transport_ambiguous",
                 status_code=None,
@@ -1146,10 +1500,12 @@ async def proxy_chat_completions(
                     )
                 except httpx.TransportError:
                     totals.ambiguous = True
-                    await _settle_attempt_safely(
+                    await _settle_attempt_with_outbox(
+                        request.app.state.settlement_coordinator,
                         recorder,
                         metrics=metrics,
                         route=candidate,
+                        request_id=request_id,
                         attempt_id=attempt_id,
                         outcome="transport_ambiguous",
                         status_code=response.status_code,
@@ -1172,10 +1528,12 @@ async def proxy_chat_completions(
                         )
                 else:
                     totals.add(retry_usage, retry_cost)
-                    await _settle_attempt_safely(
+                    await _settle_attempt_with_outbox(
+                        request.app.state.settlement_coordinator,
                         recorder,
                         metrics=metrics,
                         route=candidate,
+                        request_id=request_id,
                         attempt_id=attempt_id,
                         outcome="retryable_status",
                         status_code=response.status_code,
@@ -1218,6 +1576,7 @@ async def proxy_chat_completions(
                         cache_ttl_seconds=route.exact_cache_ttl_seconds,
                         cache_max_entry_bytes=settings.cache_max_entry_bytes,
                         metrics=metrics,
+                        settlement_coordinator=request.app.state.settlement_coordinator,
                     ),
                     status_code=response.status_code,
                     headers=_downstream_headers(
@@ -1248,26 +1607,43 @@ async def proxy_chat_completions(
     error_code = (
         "PROVIDER_TIMEOUT" if last_failure == "provider_timeout" else "PROVIDER_UNAVAILABLE"
     )
+    final_usage = totals.usage()
+    final_cost = None if totals.ambiguous else totals.cost_microusd if totals.has_cost else None
+    durable_failure_settlement = False
     if recorder is not None:
-        await _settle_safely(
-            recorder,
+        durable_failure_settlement = await _enqueue_request_settlement(
+            request.app.state.settlement_coordinator,
+            policy_engine=policy_engine,
+            policy_lease=policy_lease,
+            metrics=metrics,
             request_id=request_id,
             outcome=last_failure,
             status_code=status_code,
             provider_request_id=None,
             started_at=started_at,
-            usage=totals.usage(),
-            cost_microusd=totals.cost_microusd if totals.has_cost else None,
+            usage=final_usage,
+            cost_microusd=final_cost,
             first_token_ms=None,
             final_route=last_route,
             price_id=last_price.price_id if last_price is not None else None,
         )
-    if policy_engine is not None and policy_lease is not None:
-        await policy_engine.settle(
-            policy_lease,
-            None if totals.ambiguous else totals.usage().total_tokens,
-            None if totals.ambiguous else totals.cost_microusd if totals.has_cost else None,
-        )
+        if not durable_failure_settlement:
+            await _settle_safely(
+                recorder,
+                metrics=metrics,
+                request_id=request_id,
+                outcome=last_failure,
+                status_code=status_code,
+                provider_request_id=None,
+                started_at=started_at,
+                usage=final_usage,
+                cost_microusd=final_cost,
+                first_token_ms=None,
+                final_route=last_route,
+                price_id=last_price.price_id if last_price is not None else None,
+            )
+    if not durable_failure_settlement and policy_engine is not None and policy_lease is not None:
+        await policy_engine.settle(policy_lease, final_usage.total_tokens, final_cost)
     return _error(
         request,
         status_code=status_code,

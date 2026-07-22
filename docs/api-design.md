@@ -63,11 +63,20 @@ Northgate-Metadata: {"tenant_id":"...","user_id":"...","run_id":"..."}
 
 Limits:
 
+- Maximum request body size: 5 MiB by default, configurable with
+  `NORTHGATE_MAX_REQUEST_BODY_BYTES`; oversized fixed-length and chunked requests
+  return `413 REQUEST_TOO_LARGE`.
 - Maximum encoded size: 8 KiB.
 - Keys and string values have explicit length limits.
 - Reserved keys use the `northgate.` prefix.
 - Metadata is never forwarded upstream unless a route explicitly maps it.
 - Route metadata rules use exact string matches and never grant gateway access.
+
+Current trust limitation: the application-key allowlist authenticates which keys
+may be submitted, but it does not bind or authenticate their values. Until the
+trusted metadata design in the architecture review is implemented, caller-supplied
+metadata must not select authorization-sensitive routes, privileged models,
+budgets, or data regions.
 
 ## Streaming
 

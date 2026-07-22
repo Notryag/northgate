@@ -93,6 +93,56 @@ def test_tracing_requires_otlp_endpoint_without_injected_exporter() -> None:
         create_app(Settings(environment="test", tracing_enabled=True))
 
 
+def test_settlement_outbox_requires_usage_persistence() -> None:
+    with pytest.raises(ValueError, match="NORTHGATE_USAGE_PERSISTENCE_ENABLED"):
+        create_app(
+            Settings(
+                environment="test",
+                usage_persistence_enabled=False,
+                settlement_outbox_enabled=True,
+            )
+        )
+
+
+@pytest.mark.anyio
+async def test_outbox_readiness_requires_an_active_settlement_worker() -> None:
+    class DatabaseStub:
+        async def ping(self) -> bool:
+            return True
+
+    class RedisStub:
+        worker_available = False
+
+        async def ping(self) -> bool:
+            return True
+
+        async def scan_iter(self, **_: object):
+            if self.worker_available:
+                yield b"northgate:settlement:worker:heartbeat:test"
+
+    redis = RedisStub()
+    app = create_app(
+        Settings(
+            environment="test",
+            usage_persistence_enabled=True,
+            settlement_outbox_enabled=True,
+        ),
+        database=DatabaseStub(),
+        redis=redis,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unavailable = await client.get("/health/ready")
+        redis.worker_available = True
+        available = await client.get("/health/ready")
+
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {
+        "status": "not_ready",
+        "reason": "settlement_worker_unavailable",
+    }
+    assert available.status_code == 200
+
+
 @pytest.mark.anyio
 async def test_valid_request_id_is_preserved() -> None:
     request_id = "req_test-request-123"
@@ -119,6 +169,8 @@ async def test_application_key_cannot_access_operator_analytics() -> None:
     app = create_app(
         Settings(
             environment="test",
+            routing_source="configuration",
+            usage_persistence_enabled=False,
             operator_key_sha256=SecretStr(sha256(operator_key.encode()).hexdigest()),
         )
     )
@@ -140,6 +192,8 @@ async def test_control_plane_requires_operator_key() -> None:
     app = create_app(
         Settings(
             environment="test",
+            routing_source="configuration",
+            usage_persistence_enabled=False,
             operator_key_sha256=SecretStr(sha256(operator_key.encode()).hexdigest()),
         )
     )

@@ -7,9 +7,45 @@ This page tracks reliability gaps that remain open after an immediate incident
 fix. An item is not closed merely because production traffic recovered; it is
 closed only when its prevention, detection, and recovery criteria are verified.
 
+The broader sequencing and accepted tradeoffs are recorded in the
+[architecture review](architecture-review.md).
+
+## Caller metadata values are not bound to application identity
+
+Status: open; routing restriction documented
+
+Application keys currently contain an allowlist of metadata keys. The proxy
+validates size, shape, and key membership, but a caller holding the key may choose
+any valid string value. Exact-match route selection then consumes those values.
+This is sufficient for cooperative correlation and attribution; it is not proof
+of tenant, user, environment, privilege, or data-region identity.
+
+Until binding is implemented, operators must not configure caller metadata to
+select privileged models, higher budgets, regulated data regions, production
+environments, or other authorization-sensitive routes.
+
+Required work:
+
+- classify metadata as server-derived, key-bound fixed, signed dynamic, or
+  untrusted correlation data;
+- inject project and application identity from the authenticated key;
+- store fixed metadata values on an application key or verify dynamic values
+  against a documented signature envelope with replay bounds;
+- permit route matching and policy subjects to consume trusted classes only;
+- preserve trust class in analytics and audit configuration changes;
+- add negative tests proving a valid key cannot claim another tenant,
+  environment, or route-affecting value.
+
+Closure criteria:
+
+- every route-affecting metadata value is server-derived, fixed to the key, or
+  cryptographically verified;
+- untrusted correlation metadata cannot affect route or policy selection;
+- existing integrations have an explicit migration path and rollback behavior.
+
 ## Streaming lifecycle and concurrency settlement
 
-Status: mitigated in production; hardening remains open
+Status: regressed in production on 2026-07-22; fix and redeployment required
 
 ### Impact
 
@@ -36,9 +72,40 @@ leases behind long enough for a later call in the same agent run to be rejected.
    records remained `started` and Redis leases were released only after later
    task cleanup. Commit `bdb19e2` uses an AnyIO shielded cancellation scope and
    adds a regression test with suspended settlement operations.
+4. A later Dayboard Run exposed an uncovered exhausted-retry path. Two model
+   rounds succeeded, then the next Northgate request received two upstream `502`
+   responses. The first provider attempt settled as `retryable_status`, but the
+   final attempt was returned through `StreamingResponse`; its provider attempt
+   and request remained `started`, and its Redis concurrency lease remained
+   active. Two immediate OpenAI SDK retries then received Northgate
+   `429 CONCURRENCY_LIMIT_EXCEEDED`. The Dayboard Run failed after 31 seconds with
+   17,621 accounted tokens. Relevant IDs are Dayboard Run
+   `7f6cf42f-f850-45c0-b6b2-2c07ad3aa539`, Northgate request
+   `req_d7d6805e4e5c4292bff994b52e12e90d`, and final rejected request
+   `req_2ac7cce658874830a34b7007e0097a08`.
 
 These were coupled lifecycle and deployment defects, not three independent
 provider outages.
+
+### Root-cause classification
+
+The upstream provider's connection behavior exposed the defect, but provider
+instability was not the primary cause.
+
+- The direct technical cause was coupling stream termination and downstream
+  cancellation to PostgreSQL record settlement, Redis lease release, and the
+  application task lifecycle. The deployment path also allowed a valid base
+  Compose rebuild to omit required application-network connectivity.
+- The verification cause was testing SSE, concurrency, storage, and deployment
+  separately without exercising the production combination: real PostgreSQL and
+  Redis, sequential model/tool/model calls, terminal-event cancellation, and
+  container replacement.
+- The rollout cause was placing Northgate on an important M4 production path
+  before that combined path had passed a soak test and before reconciliation
+  existed for partial settlement.
+- The incident-management cause was initially treating restored service as
+  closure. Recovery established mitigation only; prevention, detection,
+  reconciliation, and soak-test criteria remain open below.
 
 ### Why existing verification missed it
 
@@ -56,29 +123,88 @@ provider outages.
 
 ### Required hardening
 
-- Add an integration test with real PostgreSQL and Redis that sends several
-  sequential streamed requests through one agent-style run under the production
-  concurrency limit. Every request must settle and the active lease count must
-  return to zero before the next request.
-- Add cancellation injection at each async finalization boundary: upstream close,
-  attempt settlement, request settlement, cache write, route health update, and
-  policy settlement.
-- Add a reconciliation job or explicit recovery command for expired Redis leases
-  and PostgreSQL request records left in `started`. Define terminal outcomes for
-  records whose exact usage can no longer be recovered; do not fabricate usage.
-- Export and alert on oldest active lease age, count and age of `started` request
-  records, settlement failures, cancelled database connections, and policy
-  rejection counts grouped by stable error code.
-- Make the production deployment entry point encode the platform topology rather
-  than rely on shell state. CI or the upgrade script must validate that Northgate
-  joins both its private network and every configured application network.
-- Extend readiness or deployment acceptance with a dependency probe from the
-  application container to Northgate. Keep the ordinary Northgate readiness
-  endpoint provider-neutral.
-- Verify that gateway saturation and upstream provider throttling remain distinct
-  stable error codes, metrics, and operator messages.
-- Run a soak test containing streaming, tool calls, client disconnects, retries,
-  and container recreation before declaring this issue closed.
+Implemented on 2026-07-22:
+
+- A real PostgreSQL and Redis integration test now runs three sequential SSE
+  requests under concurrency limit one. Each stream terminates at `[DONE]`, each
+  request and attempt reaches `succeeded`, and the lease count returns to zero
+  before the next request.
+- `northgate-reconcile` now previews stale records and expired leases by default.
+  Explicit `--apply` releases recoverable leases and marks stale request and
+  attempt records `settlement_incomplete` without inventing usage. Its integration
+  test verifies preview, application, and idempotent repetition.
+- `northgate_settlement_failures_total{stage}` now exposes request, attempt, and
+  policy settlement failures with bounded labels.
+- `/metrics` now exports the count and oldest age of `started` request records and
+  active concurrency leases. Admission stores lease start metadata separately
+  from its renewable expiry, and settlement/reconciliation remove both atomically
+  within each Redis operation.
+- Stream finalization now shields upstream close, cache write, route health,
+  attempt settlement, request settlement, and policy settlement as one ordered
+  operation. Parameterized cancellation tests suspend each boundary independently
+  and verify that every later stage still completes.
+- Regression coverage distinguishes a Northgate
+  `CONCURRENCY_LIMIT_EXCEEDED` envelope and gateway-error metric from a provider's
+  native `429` response and provider-attempt metric.
+- `scripts/validate-compose-topology.sh` is now a mandatory preflight of the
+  supported upgrade command. It fails before build, backup, migration, or
+  replacement when the merged service lacks either required network or the
+  configured external platform network does not exist.
+- The supported upgrade command optionally executes a readiness request from the
+  configured application container, and deployable Prometheus rules cover stale
+  requests, stale leases, settlement failures, metrics collection failures, and
+  Northgate concurrency rejections.
+- The isolated Compose soak harness now exercises non-streaming calls, complete
+  SSE, two-step tool calls, deliberate client disconnects, injected primary
+  failures with fallback, and a Northgate container recreation. Its 2026-07-22
+  verification completed 10 iterations with 12 fallback attempts and ended with
+  zero `started` records and zero active leases.
+- Migration `0012` adds a durable settlement outbox. `northgate-worker` claims
+  events with `FOR UPDATE SKIP LOCKED`, records database and policy progress
+  separately, and retries idempotently. A real PostgreSQL/Redis test injects a
+  policy failure after database settlement and verifies recovery without double
+  counting tokens.
+- `/metrics` exposes pending outbox count, oldest pending age, and exhausted
+  events. The deployable Prometheus rules alert on delayed or failed events.
+- `NORTHGATE_SETTLEMENT_OUTBOX_ENABLED` moves streamed provider-response,
+  cache-hit, and final provider-unavailable/timeout accounting to the outbox.
+  Northgate immediately attempts the event once; a later failure is retried by
+  `northgate-worker`, while an enqueue failure falls back to inline settlement
+  and increments the `outbox_enqueue` failure metric.
+- Revision `0013` allows multiple idempotent events per request. Timeout,
+  transport-error, and retryable-status attempts now use durable
+  `attempt:{attempt_id}` events independently of the terminal request event.
+- Outbox-enabled readiness now requires at least one active worker heartbeat.
+  The isolated failure soak verified worker loss becomes unready after the TTL
+  and that a Redis settlement retry recovers across Northgate recreation.
+- `northgate_settlement_worker_available` and the deployable alert rule expose
+  worker heartbeat loss independently of HTTP readiness.
+
+Still required:
+
+- Fix exhausted retryable server responses (`5xx`) so the final provider body is
+  consumed and the provider attempt, request record, and policy lease are settled
+  before Northgate returns its stable `PROVIDER_UNAVAILABLE` response. Preserve a
+  provider-native final `429` response so it remains distinguishable from a
+  Northgate policy rejection.
+- Implementation handoff: keep the final retryable response on the same
+  lifecycle path as every other terminal outcome. The response body must be
+  drained or explicitly closed, the provider attempt must receive a terminal
+  status, the request record must leave `started`, and the policy lease must be
+  released before the HTTP response is observable by the caller. Do not rely on
+  background task cleanup or on a later request to trigger reconciliation.
+- Add a regression test with concurrency limit one and two consecutive upstream
+  `502` responses. It must prove the first request has no `started` records or
+  active lease before a second request is admitted immediately. Cover both inline
+  settlement and settlement-outbox mode, including a failing first outbox process.
+- Require and monitor the healthy settlement-worker profile in every production
+  deployment that enables the outbox. Generic Compose exposes the profile, but
+  `validate-compose-topology.sh` now rejects an outbox-enabled merged config that
+  lacks the worker; connect heartbeat alerts to the deployment controller.
+- Connect the provided alert rules to the production Alertmanager and add a
+  cancelled-database-connection signal when the database pool exposes one.
+- Make the application-container probe mandatory in each production deployment
+  profile rather than optional in the generic Compose upgrade command.
 
 ### Closure criteria
 
@@ -93,4 +219,3 @@ This issue can be closed only when all of the following are demonstrated:
 - A production-like soak completes without false
   `CONCURRENCY_LIMIT_EXCEEDED`, leaked database connections, or unexplained
   request records.
-

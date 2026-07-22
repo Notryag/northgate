@@ -31,8 +31,11 @@ class Settings(BaseSettings):
     redis_url: SecretStr = SecretStr("redis://localhost:6380/0")
     routing_source: Literal["configuration", "database"] = "configuration"
     usage_persistence_enabled: bool = False
+    settlement_outbox_enabled: bool = False
+    settlement_worker_heartbeat_ttl_seconds: int = Field(default=15, ge=5, le=300)
     gateway_slug: str = "default"
     allowed_metadata_keys: str = "tenant_id,user_id,run_id,environment"
+    max_request_body_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     request_limit_per_minute: int | None = Field(default=None, gt=0)
     concurrency_limit: int | None = Field(default=None, gt=0)
     token_limit_per_day: int | None = Field(default=None, gt=0)

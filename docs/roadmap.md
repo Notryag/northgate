@@ -1,10 +1,15 @@
 # Roadmap
 
 Status: proposed  
-Last reviewed: 2026-07-15
+Last reviewed: 2026-07-22
 
 Milestones are ordered by dependency. A milestone is complete only when its
 exit criteria are verified; feature count alone is not completion.
+
+The accepted 2026-07-22 architecture assessment and ordered refactoring slices
+are maintained in [Architecture review and refactoring priorities](architecture-review.md).
+Settlement recovery, pipeline decomposition, metadata trust, and configuration
+snapshots take precedence over adding provider or endpoint breadth.
 
 ## M0: Foundation
 
@@ -138,6 +143,25 @@ Implemented so far:
 - Route/provider attempt distribution API and React console visibility for
   weighted traffic, retries, fallback load, tokens, cost, and latency.
 - Gateway policy control API for request, concurrency, token, spend, and exact-cache limits.
+- Real PostgreSQL/Redis sequential streaming settlement verification and an
+  idempotent `northgate-reconcile` recovery command for stale ambiguous records.
+- Durable settlement migration `0012`, an idempotent coordinator, and the
+  `northgate-worker` entry point. A real-store test verifies recovery when
+  PostgreSQL terminal records commit but the first Redis settlement fails.
+- Guarded outbox handoff for streamed responses, cache hits, and final provider
+  failures, with inline fallback when event enqueue is unavailable.
+- Multi-event settlement keys in migration `0013`, with durable intermediate
+  timeout, transport-error, and retryable-status attempt settlement.
+- First request-pipeline extraction: bounded body, metadata, model parsing, token
+  estimation, and forwarded request headers now live in `proxy_input.py`.
+- Route-planning extraction: application-key route resolution, metadata-based
+  candidate selection, and primary adapter validation now live in
+  `route_planning.py`.
+- Bounded settlement failure metrics for request, attempt, and policy stages.
+- Full stream-finalization cancellation shielding with independently suspended
+  close, cache, route-health, attempt, request, and policy boundaries.
+- Isolated container-recreation soak coverage for streaming, tool calls, client
+  disconnects, injected fallback, and direct PostgreSQL/Redis reconciliation.
 - Environment-driven compatibility verifier and a canary, reconciliation, and rollback guide.
 - Compose platform-network override that keeps Northgate data stores isolated while
   exposing the gateway to existing application containers.

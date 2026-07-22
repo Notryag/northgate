@@ -163,6 +163,37 @@ async def test_proxy_exports_provider_usage_metrics() -> None:
 
 
 @pytest.mark.anyio
+async def test_request_settlement_failure_is_exported() -> None:
+    class FailingRecorder:
+        async def start(self, **_: object) -> None:
+            return None
+
+        async def start_attempt(self, **_: object):
+            return uuid4()
+
+        async def settle_attempt(self, **_: object) -> None:
+            return None
+
+        async def settle(self, **_: object) -> None:
+            raise RuntimeError("injected settlement failure")
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        await request.aread()
+        return httpx.Response(200, json={"id": "settlement-metrics"})
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(_settings(metrics_enabled=True), upstream_client=upstream_client)
+    app.state.usage_recorder = FailingRecorder()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(PROXY_PATH, json={}, headers=_authorization())
+        metrics = await client.get("/metrics")
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert 'northgate_settlement_failures_total{stage="request"} 1.0' in metrics.text
+
+
+@pytest.mark.anyio
 async def test_proxy_exports_trace_events_and_propagates_context() -> None:
     exporter = InMemorySpanExporter()
     upstream_traceparent = ""
@@ -322,6 +353,34 @@ async def test_unpermitted_metadata_fails_before_upstream() -> None:
 
 
 @pytest.mark.anyio
+async def test_oversized_request_body_fails_before_upstream() -> None:
+    called = False
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200)
+
+    async def chunks():
+        yield b"x" * 700
+        yield b"y" * 700
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(_settings(max_request_body_bytes=1024), upstream_client=upstream_client)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH,
+            content=chunks(),
+            headers={**_authorization(), "Content-Type": "application/json"},
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "REQUEST_TOO_LARGE"
+    assert called is False
+
+
+@pytest.mark.anyio
 async def test_forbidden_gateway_fails_before_upstream() -> None:
     upstream_client = AsyncClient(transport=httpx.MockTransport(lambda request: None))
     app = create_app(_settings(), upstream_client=upstream_client)
@@ -339,11 +398,36 @@ async def test_forbidden_gateway_fails_before_upstream() -> None:
 
 @pytest.mark.anyio
 async def test_provider_timeout_has_stable_error() -> None:
+    settlement_payloads: list[dict[str, object]] = []
+
+    class Recorder:
+        async def start(self, **_: object) -> None:
+            return None
+
+        async def start_attempt(self, **_: object):
+            return uuid4()
+
+        async def settle_attempt(self, **_: object) -> None:
+            return None
+
+        async def settle(self, **_: object) -> None:
+            raise AssertionError("request settlement should use the outbox")
+
+    class Coordinator:
+        async def enqueue(self, *, payload: dict[str, object], **_: object):
+            settlement_payloads.append(payload)
+            return uuid4()
+
+        async def process(self, _event_id: object) -> bool:
+            return True
+
     async def upstream(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("provider stalled", request=request)
 
     upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
     app = create_app(_settings(), upstream_client=upstream_client)
+    app.state.usage_recorder = Recorder()
+    app.state.settlement_coordinator = Coordinator()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(PROXY_PATH, json={}, headers=_authorization())
     await upstream_client.aclose()
@@ -351,6 +435,74 @@ async def test_provider_timeout_has_stable_error() -> None:
     assert response.status_code == 504
     assert response.json()["error"]["code"] == "PROVIDER_TIMEOUT"
     assert response.json()["error"]["retryable"] is True
+    assert len(settlement_payloads) == 2
+    attempt_payload = next(payload for payload in settlement_payloads if payload["request"] is None)
+    terminal_payload = next(
+        payload for payload in settlement_payloads if payload["request"] is not None
+    )
+    assert attempt_payload["attempt"]["outcome"] == "timeout_ambiguous"
+    assert terminal_payload["request"]["outcome"] == "provider_timeout"
+    assert terminal_payload["attempt"] is None
+
+
+@pytest.mark.anyio
+async def test_gateway_concurrency_rejection_is_distinct_from_provider_throttling() -> None:
+    class RejectingPolicy:
+        async def admit(self, **_: object):
+            raise PolicyRejectedError(
+                "CONCURRENCY_LIMIT_EXCEEDED",
+                "Concurrency limit exceeded",
+                {"Northgate-ConcurrencyLimit-Remaining": "0"},
+            )
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        await request.aread()
+        return httpx.Response(
+            429,
+            json={"error": {"type": "provider_rate_limit", "message": "upstream busy"}},
+        )
+
+    provider_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    provider_app = create_app(
+        _settings(metrics_enabled=True),
+        upstream_client=provider_client,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=provider_app), base_url="http://test"
+    ) as client:
+        provider_response = await client.post(PROXY_PATH, json={}, headers=_authorization())
+        provider_metrics = await client.get("/metrics")
+    await provider_client.aclose()
+
+    gateway_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    gateway_app = create_app(
+        _settings(metrics_enabled=True, concurrency_limit=1),
+        upstream_client=gateway_client,
+    )
+    gateway_app.state.policy_engine = RejectingPolicy()
+    async with AsyncClient(
+        transport=ASGITransport(app=gateway_app), base_url="http://test"
+    ) as client:
+        gateway_response = await client.post(PROXY_PATH, json={}, headers=_authorization())
+        gateway_metrics = await client.get("/metrics")
+    await gateway_client.aclose()
+
+    assert provider_response.status_code == 429
+    assert provider_response.json()["error"]["type"] == "provider_rate_limit"
+    assert "request_id" not in provider_response.json()["error"]
+    assert (
+        'northgate_provider_attempts_total{adapter="openai_compatible",'
+        'outcome="provider_error",provider="openai"} 1.0' in provider_metrics.text
+    )
+    assert 'code="CONCURRENCY_LIMIT_EXCEEDED"' not in provider_metrics.text
+
+    assert gateway_response.status_code == 429
+    assert gateway_response.json()["error"]["code"] == "CONCURRENCY_LIMIT_EXCEEDED"
+    assert gateway_response.json()["error"]["request_id"].startswith("req_")
+    assert (
+        'northgate_gateway_errors_total{code="CONCURRENCY_LIMIT_EXCEEDED"} 1.0'
+        in gateway_metrics.text
+    )
 
 
 @pytest.mark.anyio
@@ -388,6 +540,37 @@ async def test_retryable_status_falls_back_to_next_provider() -> None:
         ("provider.test", f"Bearer {PROVIDER_KEY}"),
         ("fallback.test", "Bearer fallback-secret"),
     ]
+
+
+@pytest.mark.anyio
+async def test_invalid_fallback_does_not_block_healthy_primary() -> None:
+    calls: list[str] = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host or "")
+        await request.aread()
+        return httpx.Response(200, json={"id": "primary-success"})
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(
+            fallback_provider_name="backup",
+            fallback_provider_base_url="https://fallback.test",
+            fallback_provider_api_key=SecretStr("fallback-secret"),
+            fallback_provider_adapter="azure_openai",
+            fallback_provider_api_version=None,
+        ),
+        upstream_client=upstream_client,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH, json={"model": "gpt-test"}, headers=_authorization()
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "primary-success"}
+    assert calls == ["provider.test"]
 
 
 @pytest.mark.anyio
@@ -483,6 +666,22 @@ async def test_exact_cache_hit_avoids_a_second_provider_attempt() -> None:
 
     await redis.flushdb()
     call_count = 0
+    settlement_payloads: list[dict[str, object]] = []
+
+    class Recorder:
+        async def start(self, **_: object) -> None:
+            return None
+
+        async def start_attempt(self, **_: object):
+            return uuid4()
+
+    class Coordinator:
+        async def enqueue(self, *, payload: dict[str, object], **_: object):
+            settlement_payloads.append(payload)
+            return uuid4()
+
+        async def process(self, _event_id: object) -> bool:
+            return True
 
     async def upstream(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
@@ -496,6 +695,8 @@ async def test_exact_cache_hit_avoids_a_second_provider_attempt() -> None:
         upstream_client=upstream_client,
         redis=redis,
     )
+    app.state.usage_recorder = Recorder()
+    app.state.settlement_coordinator = Coordinator()
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             first = await client.post(
@@ -517,6 +718,13 @@ async def test_exact_cache_hit_avoids_a_second_provider_attempt() -> None:
         assert second.json() == {"id": "cached-response"}
         assert different_accept.headers["Northgate-Cache"] == "MISS"
         assert call_count == 2
+        assert len(settlement_payloads) == 3
+        cache_hit_payload = next(
+            payload
+            for payload in settlement_payloads
+            if payload["request"]["outcome"] == "cache_hit"
+        )
+        assert cache_hit_payload["attempt"] is None
     finally:
         await upstream_client.aclose()
         await redis.flushdb()
@@ -845,6 +1053,266 @@ async def test_disconnect_after_terminal_event_settles_actual_usage() -> None:
     assert recorder.request is not None
     assert recorder.request["outcome"] == "succeeded"
     assert policy.actual_tokens == 10
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "cancel_boundary",
+    ["upstream_close", "cache_write", "route_health", "attempt", "request", "policy"],
+)
+async def test_terminal_cancellation_shields_entire_finalization(cancel_boundary: str) -> None:
+    disconnect = asyncio.Event()
+
+    class Probe:
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.completed: list[str] = []
+
+        async def run(self, name: str) -> None:
+            if name == cancel_boundary:
+                self.entered.set()
+                await self.release.wait()
+            self.completed.append(name)
+
+    probe = Probe()
+
+    class Stream(TerminalThenHangStream):
+        async def aclose(self) -> None:
+            await probe.run("upstream_close")
+            await super().aclose()
+
+    class Cache:
+        async def get(self, _key: str):
+            return None
+
+        async def set(self, *_: object) -> None:
+            await probe.run("cache_write")
+
+    class Health:
+        async def allow(self, **_: object) -> RouteHealthDecision:
+            return RouteHealthDecision(allowed=True)
+
+        async def record_success(self, **_: object) -> None:
+            await probe.run("route_health")
+
+    class Recorder:
+        async def start(self, **_: object) -> None:
+            return None
+
+        async def start_attempt(self, **_: object):
+            return uuid4()
+
+        async def settle_attempt(self, **_: object) -> None:
+            await probe.run("attempt")
+
+        async def settle(self, **_: object) -> None:
+            await probe.run("request")
+
+    class Policy:
+        async def admit(self, **_: object):
+            return SimpleNamespace(headers={})
+
+        async def settle(self, *_: object) -> None:
+            await probe.run("policy")
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        await request.aread()
+        return httpx.Response(
+            200,
+            stream=Stream(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(
+            exact_cache_ttl_seconds=60,
+            route_health_enabled=True,
+            route_health_failure_threshold=1,
+            concurrency_limit=1,
+        ),
+        upstream_client=upstream_client,
+    )
+    app.state.exact_cache = Cache()
+    app.state.route_health_engine = Health()
+    app.state.usage_recorder = Recorder()
+    app.state.policy_engine = Policy()
+    request_received = False
+
+    async def receive() -> dict:
+        nonlocal request_received
+        if not request_received:
+            request_received = True
+            return {
+                "type": "http.request",
+                "body": b'{"model":"gpt-test","stream":true}',
+                "more_body": False,
+            }
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.body" and b"[DONE]" in message.get("body", b""):
+            disconnect.set()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": PROXY_PATH,
+        "raw_path": PROXY_PATH.encode(),
+        "query_string": b"",
+        "headers": [
+            (b"host", b"test"),
+            (b"authorization", f"Bearer {APPLICATION_KEY}".encode()),
+            (b"content-type", b"application/json"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+    }
+
+    task = asyncio.create_task(app(scope, receive, send))
+    await asyncio.wait_for(probe.entered.wait(), timeout=1)
+    probe.release.set()
+    await asyncio.wait_for(task, timeout=1)
+    await upstream_client.aclose()
+
+    assert probe.completed == [
+        "upstream_close",
+        "cache_write",
+        "route_health",
+        "attempt",
+        "request",
+        "policy",
+    ]
+
+
+@pytest.mark.anyio
+async def test_non_accounting_finalization_failures_do_not_block_settlement() -> None:
+    settled: list[str] = []
+
+    class Stream(TerminalThenHangStream):
+        async def aclose(self) -> None:
+            raise RuntimeError("injected close failure")
+
+    class Cache:
+        async def get(self, _key: str):
+            return None
+
+        async def set(self, *_: object) -> None:
+            raise RuntimeError("injected cache failure")
+
+    class Health:
+        async def allow(self, **_: object) -> RouteHealthDecision:
+            return RouteHealthDecision(allowed=True)
+
+        async def record_success(self, **_: object) -> None:
+            raise RuntimeError("injected route-health failure")
+
+    class Recorder:
+        async def start(self, **_: object) -> None:
+            return None
+
+        async def start_attempt(self, **_: object):
+            return uuid4()
+
+        async def settle_attempt(self, **_: object) -> None:
+            settled.append("attempt")
+
+        async def settle(self, **_: object) -> None:
+            settled.append("request")
+
+    class Policy:
+        async def admit(self, **_: object):
+            return SimpleNamespace(headers={})
+
+        async def settle(self, *_: object) -> None:
+            settled.append("policy")
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        await request.aread()
+        return httpx.Response(
+            200,
+            stream=Stream(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        _settings(
+            exact_cache_ttl_seconds=60,
+            route_health_enabled=True,
+            route_health_failure_threshold=1,
+            concurrency_limit=1,
+        ),
+        upstream_client=upstream_client,
+    )
+    app.state.exact_cache = Cache()
+    app.state.route_health_engine = Health()
+    app.state.usage_recorder = Recorder()
+    app.state.policy_engine = Policy()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH,
+            json={"model": "gpt-test", "stream": True},
+            headers=_authorization(),
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert settled == ["attempt", "request", "policy"]
+
+
+@pytest.mark.anyio
+async def test_outbox_enqueue_failure_falls_back_to_inline_settlement() -> None:
+    settled: list[str] = []
+
+    class Recorder:
+        async def start(self, **_: object) -> None:
+            return None
+
+        async def start_attempt(self, **_: object):
+            return uuid4()
+
+        async def settle_attempt(self, **_: object) -> None:
+            settled.append("attempt")
+
+        async def settle(self, **_: object) -> None:
+            settled.append("request")
+
+    class FailingCoordinator:
+        async def enqueue(self, **_: object):
+            raise RuntimeError("injected outbox failure")
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        await request.aread()
+        return httpx.Response(
+            200,
+            json={
+                "id": "outbox-fallback",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            },
+        )
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(_settings(metrics_enabled=True), upstream_client=upstream_client)
+    app.state.usage_recorder = Recorder()
+    app.state.settlement_coordinator = FailingCoordinator()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            PROXY_PATH,
+            json={"model": "gpt-test"},
+            headers=_authorization(),
+        )
+        metrics = await client.get("/metrics")
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert settled == ["attempt", "request"]
+    assert 'northgate_settlement_failures_total{stage="outbox_enqueue"} 1.0' in metrics.text
 
 
 @pytest.fixture

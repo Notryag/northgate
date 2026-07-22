@@ -1,7 +1,7 @@
 # Development workflow
 
 Status: accepted  
-Last reviewed: 2026-07-17
+Last reviewed: 2026-07-22
 
 ## Verification cadence
 
@@ -21,6 +21,66 @@ This cadence changes when tests run, not the quality bar. A feature slice is not
 complete while a known failure remains or its critical path has not been exercised.
 
 ## Production verification log
+
+### 2026-07-22: Isolated settlement and container-recreation soak
+
+- Added `docker-compose.soak.yml` and `scripts/run-compose-soak.sh`. They use the
+  isolated `northgate-soak` Compose project, private network, database volume, and
+  host port, and remove all of those resources on exit.
+- Ran two five-iteration phases. Every iteration included a non-streaming call, a
+  complete SSE call, a two-request tool execution loop, and a stream closed by the
+  client after its first event.
+- Configured the primary mock provider to return `503` every fourth call and kept
+  a healthy fallback. The attempt ledger recorded 12 fallback attempts.
+- Force-recreated only the isolated Northgate container between phases and waited
+  for readiness before resuming traffic.
+- The final direct storage checks found zero request records in `started` and zero
+  active Redis concurrency leases. The harness exited successfully and removed
+  its containers, network, and database volume.
+- Ran the new application-side readiness probe from the existing
+  `dayboard-api-1` container to `http://northgate:8080/health/ready`; it returned
+  the expected ready response without changing or recreating production containers.
+
+Run the same deterministic local acceptance with:
+
+```sh
+./scripts/run-compose-soak.sh
+```
+
+### 2026-07-22: Guarded durable settlement handoff
+
+- Applied migrations `0012` and `0013` and enabled the outbox only in the real-storage
+  streaming integration test. Three sequential SSE requests each produced a
+  completed durable event, terminal request and attempt records, and zero active
+  concurrency leases.
+- Injected a Redis policy-settlement failure after PostgreSQL terminal updates.
+  The event retained its database progress, retried idempotently, released the
+  lease, and settled five tokens without double counting.
+- Verified an outbox enqueue failure falls back to inline request/attempt
+  settlement and increments the bounded `outbox_enqueue` failure metric.
+- Ran the real PostgreSQL/Redis tests with `PYTHONWARNINGS=error`; all three passed
+  without leaked SQLAlchemy connections. The complete backend suite passed 61
+  tests, both Compose configurations validated, and Alembic reported `0013` as
+  the single head.
+- Ran `northgate-worker --once` against the migrated local PostgreSQL and Redis;
+  it drained available work and exited successfully.
+- Verified one request can own independent `attempt:{attempt_id}` and `terminal`
+  events. Retryable status, timeout, transport error, cache hit, route-health
+  failure, and attempt-ledger failure exits all use the guarded durable handoff.
+- Extended the isolated soak with worker heartbeat/readiness and failure recovery:
+  stopping the worker produced readiness `503`; stopping Redis after an active
+  lease produced a retry event; Redis, Northgate, and the worker were restored,
+  and final reconciliation reported `started=0`, `leases=0`, `pending=0`,
+  `failed=0`, with 12 fallback attempts. Dedicated Compose resources were removed.
+- Added worker-aware Compose upgrade validation: when outbox is enabled, the
+  supported upgrade builds, stops, and starts Northgate and the settlement worker
+  together and rejects a merged configuration without the worker service.
+- Began the request-pipeline decomposition by extracting bounded request input,
+  metadata/model parsing, token estimation, and allowed forwarded headers into
+  immutable `ProxyRequestInput`; the existing proxy behavior suite remained green.
+- Extracted application-key route resolution, metadata candidate selection, and
+  primary adapter validation into `route_planning.py`. Fallback validation and
+  provider HTTP execution deliberately remain together for the next executor slice.
 
 ### 2026-07-17: Dayboard single-tenant canary
 

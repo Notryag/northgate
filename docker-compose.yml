@@ -17,6 +17,8 @@ services:
       NORTHGATE_REDIS_URL: redis://redis:6379/0
       NORTHGATE_ROUTING_SOURCE: ${NORTHGATE_ROUTING_SOURCE:-configuration}
       NORTHGATE_USAGE_PERSISTENCE_ENABLED: ${NORTHGATE_USAGE_PERSISTENCE_ENABLED:-false}
+      NORTHGATE_SETTLEMENT_OUTBOX_ENABLED: ${NORTHGATE_SETTLEMENT_OUTBOX_ENABLED:-false}
+      NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS: ${NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS:-15}
       NORTHGATE_GATEWAY_SLUG: ${NORTHGATE_GATEWAY_SLUG:-default}
       NORTHGATE_ALLOWED_METADATA_KEYS: ${NORTHGATE_ALLOWED_METADATA_KEYS:-tenant_id,user_id,run_id,environment}
       NORTHGATE_REQUEST_LIMIT_PER_MINUTE: ${NORTHGATE_REQUEST_LIMIT_PER_MINUTE:-}
@@ -66,6 +68,22 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+
+  settlement-worker:
+    build: .
+    profiles: ["settlement-worker"]
+    command: ["northgate-worker", "--poll-seconds", "0.25"]
+    restart: unless-stopped
+    environment:
+      NORTHGATE_DATABASE_URL: postgresql+asyncpg://northgate:northgate@postgres:5432/northgate
+      NORTHGATE_REDIS_URL: redis://redis:6379/0
+      NORTHGATE_CONCURRENCY_LEASE_SECONDS: ${NORTHGATE_CONCURRENCY_LEASE_SECONDS:-300}
+      NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS: ${NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS:-15}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   postgres:
     image: postgres:17-alpine

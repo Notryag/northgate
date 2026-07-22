@@ -86,6 +86,59 @@ cost reconcile for the previous stage. Keep request content logging disabled.
 - Compare provider invoices or usage exports with Northgate attempt tokens and cost.
 - A successful final request may contain failed or billable earlier attempts.
 
+Preview stale `started` records and expired concurrency leases without changing
+state:
+
+```sh
+uv run northgate-reconcile --older-than-seconds 900
+```
+
+After confirming no legitimate request has been running longer than the selected
+threshold, apply recovery explicitly:
+
+```sh
+uv run northgate-reconcile --older-than-seconds 900 --apply
+```
+
+The command removes expired leases and leases owned by stale requests, then marks
+stale request and attempt records as `settlement_incomplete`. It does not fabricate
+token or cost values. Re-running it is safe. Use a threshold longer than the
+maximum expected provider request and settlement duration.
+
+Migration `0012` creates the durable settlement outbox and `0013` adds the
+multi-event keys required by the current worker. The worker can drain currently
+available events once and exit:
+
+```sh
+uv run northgate-worker --once
+```
+
+or run continuously with a bounded poll interval:
+
+```sh
+uv run northgate-worker --poll-seconds 0.25
+```
+
+Enable the guarded provider-response handoff only after migration `0013`, the
+worker, metrics scraping, and alert rules are active:
+
+```sh
+export NORTHGATE_USAGE_PERSISTENCE_ENABLED=true
+export NORTHGATE_SETTLEMENT_OUTBOX_ENABLED=true
+docker compose --profile settlement-worker up -d
+```
+
+The feature remains default-off. It covers terminal settlement after a provider
+response enters the relay path, cache hits, and final provider-unavailable/timeout
+responses. Revision `0013` provides multiple event keys per request, so timeout,
+transport-error, and retryable-status attempts are durable independently of the
+terminal request event. `northgate-reconcile` remains the recovery backstop for
+records created before an outbox event can be written.
+
+When enabled, `/health/ready` returns `503` until at least one continuously
+running worker heartbeat is present. A stopped worker becomes unready after
+`NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS`.
+
 ## Roll back
 
 For one unhealthy upstream, disable its route through `PATCH /api/v1/routes/{id}`;

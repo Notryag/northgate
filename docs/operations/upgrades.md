@@ -8,7 +8,10 @@ Last reviewed: 2026-07-17
 Compose upgrades currently use a maintenance window. Northgate does not yet
 claim rolling schema compatibility across versions. The upgrade script builds
 the checked-out target version, creates a verified backup, stops the application,
-applies the single Alembic head, and waits for readiness:
+applies the single Alembic head, and waits for readiness. Before any of those
+changes, it validates that the merged Compose configuration attaches Northgate to
+both its private network and `PLATFORM_INFRA_NETWORK`, and that the external
+platform network exists:
 
 ```sh
 git checkout <target release>
@@ -35,6 +38,30 @@ and retain the current application version or image for rollback.
 If migration or readiness fails, the script leaves Northgate stopped and prints
 the pre-upgrade backup path. Do not repeatedly rerun a failed migration without
 understanding its state.
+
+For a deployment serving another Python application container, make connectivity
+from that container part of upgrade acceptance:
+
+```sh
+NORTHGATE_APPLICATION_PROBE_CONTAINER=dayboard-api ./scripts/compose-upgrade.sh
+```
+
+After Northgate readiness succeeds, the upgrade runs
+`scripts/probe-application-connectivity.sh` inside that application container and
+requires `http://northgate:8080/health/ready` to return the expected JSON. Override
+the URL with `NORTHGATE_APPLICATION_PROBE_URL` when the Compose service name or
+port differs. The application image must provide Python and `urllib.request`.
+
+Import `deploy/prometheus/northgate-alerts.yml` into the deployment's Prometheus
+rule configuration. Its ten-minute stale thresholds are conservative defaults;
+set them above the maximum accepted provider request plus settlement duration.
+
+When enabling durable settlement, deploy the `settlement-worker` profile in the
+same release as the application. Northgate readiness remains `503` until a worker
+heartbeat is visible, so a data-plane-only rollout cannot pass health checks.
+Set `NORTHGATE_SETTLEMENT_OUTBOX_ENABLED=true` before running the upgrade script;
+its topology preflight then requires the worker service and the upgrade starts,
+stops, and builds both services as one unit.
 
 ## Rollback
 

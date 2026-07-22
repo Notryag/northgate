@@ -1,16 +1,34 @@
 """Small OpenAI-compatible provider used for local tool-calling verification."""
 
 import json
+import os
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class Handler(BaseHTTPRequestHandler):
+    request_count = 0
+    request_count_lock = threading.Lock()
+
     def do_POST(self) -> None:
         length = int(self.headers.get("content-length", "0"))
         request = json.loads(self.rfile.read(length))
         messages = request.get("messages", [])
         tools = request.get("tools", [])
+
+        with self.request_count_lock:
+            type(self).request_count += 1
+            request_count = type(self).request_count
+        fail_every = int(os.getenv("MOCK_PROVIDER_FAIL_EVERY", "0"))
+        if fail_every > 0 and request_count % fail_every == 0:
+            body = b'{"error":{"type":"injected_failure"}}'
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         if request.get("stream"):
             self.send_response(200)
@@ -23,7 +41,7 @@ class Handler(BaseHTTPRequestHandler):
             }
             self.wfile.write(f"data: {json.dumps(first)}\n\n".encode())
             self.wfile.flush()
-            time.sleep(5)
+            time.sleep(float(os.getenv("MOCK_PROVIDER_STREAM_DELAY_SECONDS", "5")))
             usage = {
                 "id": "chatcmpl_northgate_stream",
                 "object": "chat.completion.chunk",
@@ -90,7 +108,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    ThreadingHTTPServer(("127.0.0.1", 9090), Handler).serve_forever()
+    bind = os.getenv("MOCK_PROVIDER_BIND", "127.0.0.1")
+    port = int(os.getenv("MOCK_PROVIDER_PORT", "9090"))
+    ThreadingHTTPServer((bind, port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

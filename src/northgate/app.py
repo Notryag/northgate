@@ -31,6 +31,7 @@ from northgate.pricing import PricingRepository
 from northgate.proxy import proxy_chat_completions
 from northgate.route_health import RouteHealthEngine
 from northgate.routing import DatabaseRouteResolver
+from northgate.settlement import SettlementCoordinator, settlement_worker_available
 from northgate.tracing import Tracing
 from northgate.usage import UsageRecorder
 
@@ -44,6 +45,10 @@ def create_app(
     span_exporter: SpanExporter | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    if settings.settlement_outbox_enabled and not settings.usage_persistence_enabled:
+        raise ValueError(
+            "NORTHGATE_SETTLEMENT_OUTBOX_ENABLED requires NORTHGATE_USAGE_PERSISTENCE_ENABLED"
+        )
     configure_logging(settings.log_level)
     metrics = Metrics(__version__) if settings.metrics_enabled else None
     database_required = settings.routing_source == "database" or settings.usage_persistence_enabled
@@ -65,6 +70,7 @@ def create_app(
     redis_required = (
         settings.routing_source == "database"
         or configured_policy
+        or settings.settlement_outbox_enabled
         or settings.route_health_enabled
         or settings.exact_cache_ttl_seconds is not None
     )
@@ -132,6 +138,7 @@ def create_app(
     app.state.settings = settings
     app.state.console_directory = settings.console_directory
     app.state.database = active_database
+    app.state.redis = active_redis
     app.state.credential_cipher = credential_cipher
     app.state.route_resolver = route_resolver
     app.state.metrics = metrics
@@ -141,7 +148,11 @@ def create_app(
         RouteHealthEngine(active_redis) if active_redis is not None else None
     )
     app.state.policy_engine = (
-        PolicyEngine(active_redis, lease_seconds=settings.concurrency_lease_seconds)
+        PolicyEngine(
+            active_redis,
+            lease_seconds=settings.concurrency_lease_seconds,
+            metrics=metrics,
+        )
         if active_redis is not None
         else None
     )
@@ -151,6 +162,11 @@ def create_app(
     app.state.usage_recorder = (
         UsageRecorder(active_database)
         if settings.usage_persistence_enabled and active_database is not None
+        else None
+    )
+    app.state.settlement_coordinator = (
+        SettlementCoordinator(active_database, app.state.policy_engine)
+        if settings.settlement_outbox_enabled and active_database is not None
         else None
     )
     if upstream_client is not None:
@@ -170,6 +186,12 @@ def create_app(
                 await active_redis.ping()
             except Exception:
                 return JSONResponse({"status": "not_ready"}, status_code=503)
+        if settings.settlement_outbox_enabled:
+            if active_redis is None or not await settlement_worker_available(active_redis):
+                return JSONResponse(
+                    {"status": "not_ready", "reason": "settlement_worker_unavailable"},
+                    status_code=503,
+                )
         return JSONResponse({"status": "ready"})
 
     app.add_api_route(

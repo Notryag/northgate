@@ -46,6 +46,8 @@ async def test_atomic_admission_and_idempotent_token_settlement() -> None:
             limits=token_limits,
             estimated_tokens=30,
         )
+        started_key = "northgate:policy:{token-test}:concurrency:started"
+        assert await redis.hget(started_key, "req_token_1") is not None
         with pytest.raises(PolicyRejectedError, match="Concurrency limit exceeded"):
             await engine.admit(
                 gateway_key="token-test",
@@ -56,6 +58,7 @@ async def test_atomic_admission_and_idempotent_token_settlement() -> None:
 
         await engine.settle(first, 10)
         await engine.settle(first, 10)
+        assert await redis.hget(started_key, "req_token_1") is None
         with pytest.raises(PolicyRejectedError, match="Token limit exceeded"):
             await engine.admit(
                 gateway_key="token-test",

@@ -2,12 +2,16 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import structlog
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from northgate.routing import PolicyLimits
+
+if TYPE_CHECKING:
+    from northgate.metrics import Metrics
 
 logger = structlog.get_logger()
 
@@ -31,6 +35,10 @@ if request_limit > 0 and request_current >= request_limit then
     return {2, request_current, redis.call('PTTL', KEYS[1]), 0, 0, 0, 0}
 end
 
+local expired = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now_ms)
+for _, expired_request_id in ipairs(expired) do
+    redis.call('HDEL', KEYS[6], expired_request_id)
+end
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
 if redis.call('ZSCORE', KEYS[2], request_id) then
     return {5, request_current, 0, redis.call('ZCARD', KEYS[2]), 0, 0, 0}
@@ -79,7 +87,9 @@ end
 if concurrency_limit > 0 then
     concurrency_current = concurrency_current + 1
     redis.call('ZADD', KEYS[2], now_ms + lease_ms, request_id)
+    redis.call('HSET', KEYS[6], request_id, now_ms)
     redis.call('PEXPIRE', KEYS[2], lease_ms * 2)
+    redis.call('PEXPIRE', KEYS[6], lease_ms * 2)
 end
 if token_limit > 0 then
     token_used = redis.call('HINCRBY', KEYS[3], 'used', estimated_tokens)
@@ -109,20 +119,21 @@ local token_ttl_ms = tonumber(ARGV[3])
 local actual_cost = tonumber(ARGV[4])
 local spend_ttl_ms = tonumber(ARGV[5])
 redis.call('ZREM', KEYS[1], request_id)
+redis.call('HDEL', KEYS[2], request_id)
 
-if redis.call('HEXISTS', KEYS[2], 's:' .. request_id) == 0 then
-    local reserved_tokens = redis.call('HGET', KEYS[2], 'r:' .. request_id)
+if redis.call('HEXISTS', KEYS[3], 's:' .. request_id) == 0 then
+    local reserved_tokens = redis.call('HGET', KEYS[3], 'r:' .. request_id)
     if reserved_tokens then
         reserved_tokens = tonumber(reserved_tokens)
         if actual_tokens < 0 then actual_tokens = reserved_tokens end
-        redis.call('HINCRBY', KEYS[2], 'used', actual_tokens - reserved_tokens)
-        redis.call('HDEL', KEYS[2], 'r:' .. request_id)
-        redis.call('HSET', KEYS[2], 's:' .. request_id, actual_tokens)
-        redis.call('PEXPIRE', KEYS[2], token_ttl_ms)
+        redis.call('HINCRBY', KEYS[3], 'used', actual_tokens - reserved_tokens)
+        redis.call('HDEL', KEYS[3], 'r:' .. request_id)
+        redis.call('HSET', KEYS[3], 's:' .. request_id, actual_tokens)
+        redis.call('PEXPIRE', KEYS[3], token_ttl_ms)
     end
 end
 
-for key_index = 3, 4 do
+for key_index = 4, 5 do
     if redis.call('HEXISTS', KEYS[key_index], 's:' .. request_id) == 0 then
         local reserved_cost = redis.call('HGET', KEYS[key_index], 'r:' .. request_id)
         if reserved_cost then
@@ -176,9 +187,16 @@ class PolicyLease:
 
 
 class PolicyEngine:
-    def __init__(self, redis: Redis, *, lease_seconds: int) -> None:
+    def __init__(
+        self,
+        redis: Redis,
+        *,
+        lease_seconds: int,
+        metrics: "Metrics | None" = None,
+    ) -> None:
         self.redis = redis
         self.lease_seconds = lease_seconds
+        self.metrics = metrics
 
     async def admit(
         self,
@@ -200,6 +218,7 @@ class PolicyEngine:
             f"northgate:policy:{tag}:tokens:{day}",
             f"northgate:policy:{tag}:spend:day:{day}",
             f"northgate:policy:{tag}:spend:month:{month}",
+            f"northgate:policy:{tag}:concurrency:started",
         )
         request_ttl_ms = max(1000, int((60 - now.second + 1) * 1000))
         tomorrow = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), UTC)
@@ -208,7 +227,7 @@ class PolicyEngine:
         try:
             result = await self.redis.eval(
                 _ADMIT_SCRIPT,
-                5,
+                6,
                 *keys,
                 limits.requests_per_minute or 0,
                 limits.concurrent_requests or 0,
@@ -278,36 +297,70 @@ class PolicyEngine:
         actual_tokens: int | None,
         actual_cost_microusd: int | None = None,
     ) -> None:
-        if lease.heartbeat is not None:
-            lease.heartbeat.cancel()
-            try:
-                await lease.heartbeat
-            except asyncio.CancelledError:
-                pass
+        await self.stop_renewal(lease)
+
+        try:
+            await self.settle_reservation(
+                gateway_key=lease.gateway_key,
+                request_id=lease.request_id,
+                token_day=lease.token_day,
+                spend_day=lease.spend_day,
+                spend_month=lease.spend_month,
+                actual_tokens=actual_tokens,
+                actual_cost_microusd=actual_cost_microusd,
+            )
+        except PolicyUnavailableError:
+            if self.metrics is not None:
+                self.metrics.settlement_failures.labels(stage="policy").inc()
+            await logger.aexception("policy_settlement_failed", request_id=lease.request_id)
+
+    async def stop_renewal(self, lease: PolicyLease) -> None:
+        if lease.heartbeat is None:
+            return
+        lease.heartbeat.cancel()
+        try:
+            await lease.heartbeat
+        except asyncio.CancelledError:
+            pass
+        lease.heartbeat = None
+
+    async def settle_reservation(
+        self,
+        *,
+        gateway_key: str,
+        request_id: str,
+        token_day: str,
+        spend_day: str,
+        spend_month: str,
+        actual_tokens: int | None,
+        actual_cost_microusd: int | None,
+    ) -> None:
+        """Apply an idempotent reservation settlement without a live heartbeat task."""
 
         now = datetime.now(UTC)
-        tag = f"{{{lease.gateway_key}}}"
+        tag = f"{{{gateway_key}}}"
         keys = (
             f"northgate:policy:{tag}:concurrency",
-            f"northgate:policy:{tag}:tokens:{lease.token_day}",
-            f"northgate:policy:{tag}:spend:day:{lease.spend_day}",
-            f"northgate:policy:{tag}:spend:month:{lease.spend_month}",
+            f"northgate:policy:{tag}:concurrency:started",
+            f"northgate:policy:{tag}:tokens:{token_day}",
+            f"northgate:policy:{tag}:spend:day:{spend_day}",
+            f"northgate:policy:{tag}:spend:month:{spend_month}",
         )
         tomorrow = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), UTC)
         token_ttl_ms = int((tomorrow - now + timedelta(days=1)).total_seconds() * 1000)
         try:
             await self.redis.eval(
                 _SETTLE_SCRIPT,
-                4,
+                5,
                 *keys,
-                lease.request_id,
+                request_id,
                 actual_tokens if actual_tokens is not None else -1,
                 token_ttl_ms,
                 actual_cost_microusd if actual_cost_microusd is not None else -1,
                 70 * 24 * 60 * 60 * 1000,
             )
-        except RedisError:
-            await logger.aexception("policy_settlement_failed", request_id=lease.request_id)
+        except RedisError as exc:
+            raise PolicyUnavailableError from exc
 
     async def _maintain(self, lease: PolicyLease) -> None:
         key = f"northgate:policy:{{{lease.gateway_key}}}:concurrency"
