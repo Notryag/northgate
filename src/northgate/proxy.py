@@ -8,7 +8,6 @@ from uuid import UUID
 
 import httpx
 import structlog
-from anyio import CancelScope
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -56,6 +55,7 @@ from northgate.routing import (
     RouteUnavailableError,
 )
 from northgate.settlement import SettlementCoordinator
+from northgate.stream_relay import relay_response_body
 from northgate.tracing import Tracing, add_span_event
 from northgate.usage import (
     DuplicateRequestError,
@@ -301,11 +301,6 @@ class AttemptTotals:
         )
 
 
-async def _finish_during_cancellation(awaitable) -> None:
-    with CancelScope(shield=True):
-        await awaitable
-
-
 async def _settle_attempt_safely(
     recorder: UsageRecorder | None,
     *,
@@ -500,6 +495,8 @@ class StreamFinalization:
         completed: bool,
         cache_body: bytearray | None,
     ) -> None:
+        if transport_failed:
+            self.totals.ambiguous = True
         try:
             await self.response.aclose()
         except Exception:
@@ -695,7 +692,7 @@ class StreamFinalization:
             )
 
 
-async def _response_body(
+def _response_body(
     response: httpx.Response,
     *,
     recorder: UsageRecorder | None,
@@ -718,11 +715,6 @@ async def _response_body(
     metrics: Metrics | None,
     settlement_coordinator: SettlementCoordinator | None,
 ) -> AsyncIterator[bytes]:
-    accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
-    outcome = "succeeded" if response.status_code < 400 else "provider_error"
-    transport_failed = False
-    completed = False
-    cache_body: bytearray | None = bytearray() if cache_key is not None else None
     finalization = StreamFinalization(
         response=response,
         recorder=recorder,
@@ -744,50 +736,13 @@ async def _response_body(
         metrics=metrics,
         settlement_coordinator=settlement_coordinator,
     )
-    try:
-        if response.is_stream_consumed:
-            accumulator.observe(response.content)
-            if cache_body is not None:
-                if len(response.content) <= cache_max_entry_bytes:
-                    cache_body.extend(response.content)
-                else:
-                    cache_body = None
-            yield response.content
-            completed = True
-            return
-        async for chunk in response.aiter_raw():
-            accumulator.observe(chunk)
-            if cache_body is not None:
-                if len(cache_body) + len(chunk) <= cache_max_entry_bytes:
-                    cache_body.extend(chunk)
-                else:
-                    cache_body = None
-            yield chunk
-            if accumulator.terminal_event_seen:
-                break
-        completed = True
-    except asyncio.CancelledError:
-        if accumulator.terminal_event_seen:
-            outcome = "succeeded" if response.status_code < 400 else "provider_error"
-            completed = True
-        else:
-            outcome = "client_disconnected"
-        raise
-    except httpx.TransportError:
-        outcome = "provider_error"
-        transport_failed = True
-        totals.ambiguous = True
-        raise
-    finally:
-        await _finish_during_cancellation(
-            finalization.finish(
-                accumulator=accumulator,
-                outcome=outcome,
-                transport_failed=transport_failed,
-                completed=completed,
-                cache_body=cache_body,
-            )
-        )
+    return relay_response_body(
+        response,
+        started_at=started_at,
+        cache_enabled=cache_key is not None,
+        cache_max_entry_bytes=cache_max_entry_bytes,
+        finalizer=finalization,
+    )
 
 
 async def proxy_chat_completions(

@@ -107,8 +107,10 @@ dimensions with their trust class visible.
    primary validation live in `route_planning.py`; provider request construction,
    streaming send, transport-failure classification, and retryable-response
    consumption live in `attempt_execution.py`. Its terminal result preserves final
-   provider `429` passthrough and exhausts final retryable `5xx` responses. Extract
-   stream relay next behind a behavior-preserving interface.
+   provider `429` passthrough and exhausts final retryable `5xx` responses. Byte
+   relay, SSE terminal detection, cancellation outcome classification, and shielded
+   finalizer handoff live in `stream_relay.py`. Move settlement finalization behind
+   its own coordinator interface next.
 4. Add metadata trust classes and value binding, then migrate route matching to
    trusted metadata only.
 5. Compile and atomically swap versioned gateway snapshots; define stale-snapshot

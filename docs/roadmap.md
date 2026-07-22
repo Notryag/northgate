@@ -161,6 +161,9 @@ Implemented so far:
   send, timeout/connect/ambiguous transport classification, and retryable-response
   consumption now live in `attempt_execution.py`. Focused contracts preserve final
   provider `429` passthrough and exhaust final retryable `5xx` responses.
+- Stream-relay extraction: upstream byte forwarding, cache-body bounds, SSE terminal
+  detection, cancellation/transport outcome classification, and shielded finalizer
+  handoff now live in `stream_relay.py`.
 - Bounded settlement failure metrics for request, attempt, and policy stages.
 - Full stream-finalization cancellation shielding with independently suspended
   close, cache, route-health, attempt, request, and policy boundaries.
