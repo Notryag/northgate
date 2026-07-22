@@ -101,6 +101,10 @@ Run the same deterministic local acceptance with:
   `stream_relay.py`. Focused tests prove SSE `[DONE]` prevents reads past the
   terminal event and interrupted upstream reads report a transport failure before
   settlement finalization.
+- Extracted shared request/attempt settlement helpers into `proxy_settlement.py`
+  and moved streamed cache, route-health, ledger, outbox, and policy finalization
+  into `stream_finalization.py`. The endpoint module now orchestrates those stages
+  without implementing the stream lifecycle itself.
 - Began the request-pipeline decomposition by extracting bounded request input,
   metadata/model parsing, token estimation, and allowed forwarded headers into
   immutable `ProxyRequestInput`; the existing proxy behavior suite remained green.

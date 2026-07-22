@@ -109,8 +109,9 @@ dimensions with their trust class visible.
    consumption live in `attempt_execution.py`. Its terminal result preserves final
    provider `429` passthrough and exhausts final retryable `5xx` responses. Byte
    relay, SSE terminal detection, cancellation outcome classification, and shielded
-   finalizer handoff live in `stream_relay.py`. Move settlement finalization behind
-   its own coordinator interface next.
+   finalizer handoff live in `stream_relay.py`. Cache, route-health, attempt,
+   request, and policy terminal settlement now live in `stream_finalization.py`,
+   using shared guarded handoff helpers from `proxy_settlement.py`.
 4. Add metadata trust classes and value binding, then migrate route matching to
    trusted metadata only.
 5. Compile and atomically swap versioned gateway snapshots; define stale-snapshot

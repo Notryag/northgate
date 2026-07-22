@@ -164,6 +164,9 @@ Implemented so far:
 - Stream-relay extraction: upstream byte forwarding, cache-body bounds, SSE terminal
   detection, cancellation/transport outcome classification, and shielded finalizer
   handoff now live in `stream_relay.py`.
+- Settlement-stage extraction: request/attempt guarded outbox helpers and aggregate
+  attempt totals now live in `proxy_settlement.py`; streamed cache, route-health,
+  ledger, and policy finalization now lives in `stream_finalization.py`.
 - Bounded settlement failure metrics for request, attempt, and policy stages.
 - Full stream-finalization cancellation shielding with independently suspended
   close, cache, route-health, attempt, request, and policy boundaries.

@@ -1,7 +1,11 @@
+import time
 from dataclasses import dataclass
+from hashlib import sha256
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+
+from northgate.routing import ResolvedRoute
 
 _ALLOW_SCRIPT = """
 local now_ms = tonumber(ARGV[1])
@@ -122,3 +126,34 @@ class RouteHealthEngine:
     @staticmethod
     def _key(route_key: str) -> str:
         return f"northgate:route-health:{{{route_key}}}"
+
+
+def route_health_key(route: ResolvedRoute) -> str:
+    identity = (
+        f"{route.route_id or ''}\0{route.provider}\0{route.base_url.rstrip('/')}\0"
+        f"{route.adapter}\0{route.adapter_config}"
+    )
+    return sha256(identity.encode()).hexdigest()
+
+
+async def record_route_health(
+    engine: RouteHealthEngine | None,
+    route: ResolvedRoute,
+    *,
+    route_key: str,
+    token: str,
+    failed: bool,
+) -> None:
+    if engine is None or route.health_failure_threshold <= 0:
+        return
+    now_ms = int(time.time() * 1000)
+    if failed:
+        await engine.record_failure(
+            route_key=route_key,
+            token=token,
+            now_ms=now_ms,
+            threshold=route.health_failure_threshold,
+            recovery_seconds=route.health_recovery_seconds,
+        )
+    else:
+        await engine.record_success(route_key=route_key, token=token, now_ms=now_ms)
