@@ -52,9 +52,16 @@ async def resolve_routes(
 
 def plan_routes(
     routes: list[ResolvedRoute],
-    metadata: dict[str, str],
     request_id: str,
+    caller_metadata: dict[str, str],
 ) -> list[ResolvedRoute]:
+    if not routes:
+        return []
+    metadata = (
+        caller_metadata
+        if routes[0].metadata_routing_mode == "legacy"
+        else dict(routes[0].trusted_metadata)
+    )
     return select_routes(routes, metadata, request_id)
 
 

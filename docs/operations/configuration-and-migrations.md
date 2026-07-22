@@ -65,9 +65,13 @@ operations must document its recovery procedure in the release notes.
 Revision `0012` creates `settlement_events`, and revision `0013` allows multiple
 idempotent event keys per request. Both are required by this version of
 `northgate-worker` and must be applied before it starts.
-During the staged rollout the table remains empty while the feature flag is off.
-When enabled, streamed provider-response terminal events use it; other terminal
-exits remain inline until later pipeline slices migrate them.
+
+Revision `0014` adds application-key fixed metadata and marks existing keys as
+`legacy`; new keys default to `trusted`. Before removing legacy behavior, issue
+replacement keys with the required `fixed_metadata`, move each application,
+verify route selection, and revoke the old keys. Roll back the application version
+and restore the pre-upgrade database backup if trusted routing causes an unexpected
+outage.
 
 Local downgrade from `0013` to `0012` requires removing all but one settlement
 event per request first. Production rollback remains backup restore plus the prior

@@ -12,29 +12,38 @@ The broader sequencing and accepted tradeoffs are recorded in the
 
 ## Caller metadata values are not bound to application identity
 
-Status: open; routing restriction documented
+Status: fixed-value binding implemented; legacy migration and signed metadata remain open
 
-Application keys currently contain an allowlist of metadata keys. The proxy
-validates size, shape, and key membership, but a caller holding the key may choose
-any valid string value. Exact-match route selection then consumes those values.
-This is sufficient for cooperative correlation and attribution; it is not proof
-of tenant, user, environment, privilege, or data-region identity.
+Trusted application keys separate caller-allowed correlation metadata from
+operator-configured fixed routing values. The proxy validates caller metadata but
+route selection consumes only fixed values and server-derived project/application
+identity. Pre-existing keys remain in explicit `legacy` mode during migration and
+may still route on caller values; those values are cooperative attribution, not
+proof of tenant, environment, privilege, or data region.
 
-Until binding is implemented, operators must not configure caller metadata to
-select privileged models, higher budgets, regulated data regions, production
-environments, or other authorization-sensitive routes.
+Operators must not use legacy caller metadata for authorization-sensitive routes,
+privileged models, higher budgets, regulated regions, or production environments.
 
-Required work:
+Implemented on 2026-07-22:
 
-- classify metadata as server-derived, key-bound fixed, signed dynamic, or
-  untrusted correlation data;
-- inject project and application identity from the authenticated key;
-- store fixed metadata values on an application key or verify dynamic values
-  against a documented signature envelope with replay bounds;
-- permit route matching and policy subjects to consume trusted classes only;
-- preserve trust class in analytics and audit configuration changes;
-- add negative tests proving a valid key cannot claim another tenant,
-  environment, or route-affecting value.
+- Revision `0014` adds key-bound `fixed_metadata` and a routing mode to application
+  keys. It backfills existing keys as `legacy`; newly issued keys default to
+  `trusted`.
+- Trusted route planning reads only server-derived project/application IDs and
+  operator-configured fixed values. Caller metadata has no route-selection input
+  for a trusted key.
+- Control validation prevents fixed keys from overlapping caller-allowed keys and
+  reserves the `northgate.*` namespace for server identity.
+- Negative tests prove a caller claiming another tenant cannot override a trusted
+  key and that legacy caller matching remains available during migration.
+
+Still required:
+
+- replace and revoke all legacy keys that rely on caller-selected routes;
+- implement signed dynamic metadata with replay bounds;
+- preserve metadata trust classes in request analytics and audit fixed-value
+  configuration changes;
+- restrict future metadata-derived policy subjects to trusted values.
 
 Closure criteria:
 

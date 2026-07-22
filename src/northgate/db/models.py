@@ -61,6 +61,8 @@ class ApplicationKey(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200))
     key_digest: Mapped[str] = mapped_column(String(64), unique=True)
     allowed_metadata_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
+    fixed_metadata: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    metadata_routing_mode: Mapped[str] = mapped_column(String(16), default="trusted")
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

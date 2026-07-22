@@ -59,7 +59,7 @@ Run the same deterministic local acceptance with:
 - Verified an outbox enqueue failure falls back to inline request/attempt
   settlement and increments the bounded `outbox_enqueue` failure metric.
 - Ran the real PostgreSQL/Redis tests with `PYTHONWARNINGS=error`; all three passed
-  without leaked SQLAlchemy connections. The complete backend suite passed 73
+  without leaked SQLAlchemy connections. The complete backend suite passed 77
   tests, both Compose configurations validated, and Alembic reported `0013` as
   the single head.
 - Ran `northgate-worker --once` against the migrated local PostgreSQL and Redis;
@@ -105,6 +105,10 @@ Run the same deterministic local acceptance with:
   and moved streamed cache, route-health, ledger, outbox, and policy finalization
   into `stream_finalization.py`. The endpoint module now orchestrates those stages
   without implementing the stream lifecycle itself.
+- Added migration `0014` and trusted application-key route metadata. Existing keys
+  are backfilled to explicit legacy mode for staged replacement; new trusted keys
+  use only server identity and fixed operator values, with negative tests against
+  caller tenant spoofing.
 - Began the request-pipeline decomposition by extracting bounded request input,
   metadata/model parsing, token estimation, and allowed forwarded headers into
   immutable `ProxyRequestInput`; the existing proxy behavior suite remained green.

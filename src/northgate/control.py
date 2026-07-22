@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -57,6 +57,8 @@ class GatewayCreate(BaseModel):
 class ApplicationKeyCreate(NamedResourceCreate):
     project_id: UUID
     allowed_metadata_keys: list[str] = Field(default_factory=list, max_length=32)
+    fixed_metadata: dict[str, str] = Field(default_factory=dict)
+    metadata_routing_mode: Literal["trusted", "legacy"] = "trusted"
 
     @field_validator("allowed_metadata_keys")
     @classmethod
@@ -68,6 +70,25 @@ class ApplicationKeyCreate(NamedResourceCreate):
                 "metadata keys must be unique and contain only letters, digits, _, ., or -"
             )
         return value
+
+    @field_validator("fixed_metadata")
+    @classmethod
+    def validate_fixed_metadata(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 16 or any(
+            not _METADATA_KEY_PATTERN.fullmatch(key)
+            or key.startswith("northgate.")
+            or len(item) > 256
+            for key, item in value.items()
+        ):
+            raise ValueError("fixed_metadata is too large or contains an invalid key or value")
+        return value
+
+    @model_validator(mode="after")
+    def metadata_classes_do_not_overlap(self) -> "ApplicationKeyCreate":
+        overlap = set(self.allowed_metadata_keys) & self.fixed_metadata.keys()
+        if overlap:
+            raise ValueError("fixed_metadata keys cannot also accept caller-provided values")
+        return self
 
 
 class ProviderCredentialCreate(NamedResourceCreate):
@@ -347,6 +368,8 @@ async def list_application_keys(request: Request, project_id: UUID | None = None
                 "project_id": item.project_id,
                 "name": item.name,
                 "allowed_metadata_keys": item.allowed_metadata_keys,
+                "fixed_metadata": item.fixed_metadata,
+                "metadata_routing_mode": item.metadata_routing_mode,
                 "revoked_at": item.revoked_at,
             }
             for item in resources
@@ -366,6 +389,8 @@ async def create_application_key(request: Request, payload: ApplicationKeyCreate
         name=payload.name,
         key_digest=sha256(plaintext.encode()).hexdigest(),
         allowed_metadata_keys=payload.allowed_metadata_keys,
+        fixed_metadata=payload.fixed_metadata,
+        metadata_routing_mode=payload.metadata_routing_mode,
     )
     async with database.sessions() as session:
         if await session.get(Project, payload.project_id) is None:
@@ -379,6 +404,8 @@ async def create_application_key(request: Request, payload: ApplicationKeyCreate
             "project_id": resource.project_id,
             "name": resource.name,
             "allowed_metadata_keys": resource.allowed_metadata_keys,
+            "fixed_metadata": resource.fixed_metadata,
+            "metadata_routing_mode": resource.metadata_routing_mode,
             "key": plaintext,
         },
         201,

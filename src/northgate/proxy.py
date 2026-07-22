@@ -218,7 +218,7 @@ async def proxy_chat_completions(
             message="Invalid request metadata",
             retryable=False,
         )
-    routes = plan_routes(routes, request_metadata, request_id)
+    routes = plan_routes(routes, request_id, request_metadata)
     if not routes:
         return _error(
             request,

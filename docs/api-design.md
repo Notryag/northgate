@@ -44,16 +44,17 @@ default.
 
 Implemented behavior: configuration routing compares a configured SHA-256 key
 digest. Database routing resolves the digest to a project, verifies gateway
-ownership, filters enabled routes by accepted metadata, and orders them by
+ownership, filters enabled routes by key-bound trusted metadata, and orders them by
 priority, metadata specificity, and deterministic weight selection. Provider
 credentials are decrypted in memory. Client authorization headers are never
 forwarded upstream.
 
 ## Request metadata
 
-Applications may attach business attribution such as user, tenant, environment,
-or run IDs. Metadata affects analytics and policy only when the application key
-is permitted to set the relevant dimensions.
+Applications may attach untrusted business attribution such as user, tenant,
+environment, or run IDs when the application key permits those keys. Caller
+values are recorded for correlation but trusted-mode keys never use them for route
+selection.
 
 The initial transport should use one bounded JSON header:
 
@@ -70,13 +71,14 @@ Limits:
 - Keys and string values have explicit length limits.
 - Reserved keys use the `northgate.` prefix.
 - Metadata is never forwarded upstream unless a route explicitly maps it.
-- Route metadata rules use exact string matches and never grant gateway access.
+- Route metadata rules use exact string matches against server-derived identity
+  and operator-configured `fixed_metadata` for trusted-mode application keys.
 
-Current trust limitation: the application-key allowlist authenticates which keys
-may be submitted, but it does not bind or authenticate their values. Until the
-trusted metadata design in the architecture review is implemented, caller-supplied
-metadata must not select authorization-sensitive routes, privileged models,
-budgets, or data regions.
+Revision `0014` marks pre-existing keys as `legacy` so upgrades do not immediately
+break caller-metadata routes. New keys default to `trusted`. Operators migrate by
+issuing a trusted replacement key with fixed routing values, moving the caller,
+and revoking the legacy key. Legacy mode is a temporary compatibility boundary;
+caller-supplied values must not select authorization-sensitive routes.
 
 ## Streaming
 
@@ -182,7 +184,8 @@ an optional parent resource ID as a query filter. Create endpoints accept JSON:
 POST /api/v1/organizations             {name}
 POST /api/v1/projects                  {organization_id, name}
 POST /api/v1/gateways                  {project_id, slug}
-POST /api/v1/application-keys          {project_id, name, allowed_metadata_keys}
+POST /api/v1/application-keys          {project_id, name, allowed_metadata_keys,
+                                        fixed_metadata, metadata_routing_mode}
 POST /api/v1/provider-credentials      {project_id, name, provider, base_url,
                                         adapter, adapter_config, api_key}
 POST /api/v1/routes                    {gateway_id, provider_credential_id, name,

@@ -167,6 +167,9 @@ Implemented so far:
 - Settlement-stage extraction: request/attempt guarded outbox helpers and aggregate
   attempt totals now live in `proxy_settlement.py`; streamed cache, route-health,
   ledger, and policy finalization now lives in `stream_finalization.py`.
+- Metadata binding migration `0014`: trusted application keys route only on
+  server-derived project/application identity and operator-configured fixed
+  values. Existing keys retain explicit legacy matching for staged replacement.
 - Bounded settlement failure metrics for request, attempt, and policy stages.
 - Full stream-finalization cancellation shielding with independently suspended
   close, cache, route-health, attempt, request, and policy boundaries.

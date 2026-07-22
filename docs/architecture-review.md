@@ -112,8 +112,10 @@ dimensions with their trust class visible.
    finalizer handoff live in `stream_relay.py`. Cache, route-health, attempt,
    request, and policy terminal settlement now live in `stream_finalization.py`,
    using shared guarded handoff helpers from `proxy_settlement.py`.
-4. Add metadata trust classes and value binding, then migrate route matching to
-   trusted metadata only.
+4. In progress: revision `0014` adds fixed metadata binding and server-derived
+   project/application identity. Trusted keys route only on those values; existing
+   keys retain explicit legacy behavior for replacement-key migration. Add signed
+   dynamic values, analytics trust classes, and remove legacy keys next.
 5. Compile and atomically swap versioned gateway snapshots; define stale-snapshot
    and credential-rotation behavior.
 6. Add independent data-plane and control-plane entry points and the first

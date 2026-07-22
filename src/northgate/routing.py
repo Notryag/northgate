@@ -63,6 +63,9 @@ class ResolvedRoute:
     api_key: str
     allowed_metadata_keys: frozenset[str]
     policy: PolicyLimits
+    application_id: UUID | None = None
+    trusted_metadata: tuple[tuple[str, str], ...] = ()
+    metadata_routing_mode: str = "trusted"
     adapter: str = "openai_compatible"
     adapter_config: tuple[tuple[str, str], ...] = ()
     priority: int = 0
@@ -119,6 +122,11 @@ class DatabaseRouteResolver:
             )
 
         resolved: list[ResolvedRoute] = []
+        trusted_metadata = {
+            "northgate.project_id": str(application.project_id),
+            "northgate.application_id": str(application.id),
+            **application.fixed_metadata,
+        }
         for route, credential in rows:
             try:
                 api_key = self.cipher.decrypt(credential.encrypted_api_key)
@@ -135,6 +143,9 @@ class DatabaseRouteResolver:
                     adapter=credential.adapter,
                     adapter_config=_adapter_config(credential.adapter_config),
                     allowed_metadata_keys=frozenset(application.allowed_metadata_keys),
+                    application_id=application.id,
+                    trusted_metadata=tuple(sorted(trusted_metadata.items())),
+                    metadata_routing_mode=application.metadata_routing_mode,
                     policy=PolicyLimits(
                         requests_per_minute=policy.requests_per_minute if policy else None,
                         concurrent_requests=policy.concurrent_requests if policy else None,
@@ -229,6 +240,9 @@ def configured_routes(settings: Settings) -> list[ResolvedRoute]:
                 else ()
             ),
             allowed_metadata_keys=primary.allowed_metadata_keys,
+            application_id=primary.application_id,
+            trusted_metadata=primary.trusted_metadata,
+            metadata_routing_mode=primary.metadata_routing_mode,
             policy=primary.policy,
             priority=1,
             exact_cache_ttl_seconds=primary.exact_cache_ttl_seconds,
