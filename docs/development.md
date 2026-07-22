@@ -226,3 +226,17 @@ returns Dayboard to the single-tenant canary.
 - Ran the focused analytics and application tests, Ruff checks, Console TypeScript
   check, and production build. The Ant Design shared chunk remains larger than the
   default Vite warning threshold; business pages are separately lazy-loaded.
+
+### 2026-07-22: Operator console Gateway management
+
+- Added a Gateway workspace over the existing Operator control APIs with
+  project/Gateway selection, Gateway creation, provider-credential-aware Route
+  listing and creation, and explicit Route priority, weight, and enabled updates.
+- Route creation exposes retry, circuit-breaker, and trusted metadata match fields
+  without accepting credential secrets in the browser response.
+- Added complete Gateway Policy replacement for request, concurrency, token,
+  spend, and exact-cache limits. Blank fields deliberately map to disabled limits.
+- Ran the Console TypeScript check and production build, then exercised the Web
+  page against the real read-only production control responses. Both configured
+  Gateways loaded with no browser or schema errors; no production mutation was
+  performed.

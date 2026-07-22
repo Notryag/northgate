@@ -158,6 +158,60 @@ export const requestDiagnosticSchema = z.object({
   findings: z.array(findingSchema),
 });
 
+const projectSchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+  organization_id: z.string(),
+  name: z.string(),
+});
+
+const gatewaySchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+  project_id: z.string(),
+  slug: z.string(),
+});
+
+const providerCredentialSchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+  project_id: z.string(),
+  name: z.string(),
+  provider: z.string(),
+  base_url: z.string(),
+  adapter: z.string(),
+  adapter_config: z.record(z.string(), z.string()),
+});
+
+const routeSchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+  gateway_id: z.string(),
+  provider_credential_id: z.string(),
+  name: z.string(),
+  priority: z.number(),
+  weight: z.number(),
+  match_metadata: z.record(z.string(), z.string()),
+  enabled: z.boolean(),
+  max_retries: z.number(),
+  retry_status_codes: z.array(z.number()),
+  health_failure_threshold: z.number(),
+  health_recovery_seconds: z.number(),
+  health_failure_status_codes: z.array(z.number()),
+});
+
+const policySchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+  gateway_id: z.string(),
+  requests_per_minute: nullableNumber,
+  concurrent_requests: nullableNumber,
+  tokens_per_day: nullableNumber,
+  daily_spend_microusd: nullableNumber,
+  monthly_spend_microusd: nullableNumber,
+  exact_cache_ttl_seconds: nullableNumber,
+});
+
 export type UsageSummary = z.infer<typeof usageSummarySchema>;
 export type UsagePoint = z.infer<typeof usagePointSchema>;
 export type UsageSeries = z.infer<typeof usageSeriesSchema>;
@@ -169,6 +223,11 @@ export type RequestsReport = z.infer<typeof requestsReportSchema>;
 export type Attempt = z.infer<typeof attemptSchema>;
 export type Finding = z.infer<typeof findingSchema>;
 export type RequestDiagnostic = z.infer<typeof requestDiagnosticSchema>;
+export type Project = z.infer<typeof projectSchema>;
+export type Gateway = z.infer<typeof gatewaySchema>;
+export type ProviderCredential = z.infer<typeof providerCredentialSchema>;
+export type Route = z.infer<typeof routeSchema>;
+export type GatewayPolicy = z.infer<typeof policySchema>;
 
 export interface ModelPriceCreateInput {
   provider: string;
@@ -176,6 +235,30 @@ export interface ModelPriceCreateInput {
   effective_from: string;
   input_microusd_per_million: number;
   output_microusd_per_million: number;
+}
+
+export interface RouteCreateInput {
+  gateway_id: string;
+  provider_credential_id: string;
+  name: string;
+  priority: number;
+  weight: number;
+  match_metadata: Record<string, string>;
+  enabled: boolean;
+  max_retries: number;
+  retry_status_codes: number[];
+  health_failure_threshold: number;
+  health_recovery_seconds: number;
+  health_failure_status_codes: number[];
+}
+
+export interface PolicyInput {
+  requests_per_minute: number | null;
+  concurrent_requests: number | null;
+  tokens_per_day: number | null;
+  daily_spend_microusd: number | null;
+  monthly_spend_microusd: number | null;
+  exact_cache_ttl_seconds: number | null;
 }
 
 export class ApiError extends Error {
@@ -257,6 +340,78 @@ export async function loadModelPrices(operatorKey: string) {
 export async function createModelPrice(operatorKey: string, input: ModelPriceCreateInput) {
   return request("/api/v1/model-prices", operatorKey, modelPriceSchema, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function loadProjects(operatorKey: string) {
+  return request("/api/v1/projects", operatorKey, z.array(projectSchema));
+}
+
+export async function loadGateways(operatorKey: string) {
+  return request("/api/v1/gateways", operatorKey, z.array(gatewaySchema));
+}
+
+export async function createGateway(operatorKey: string, input: { project_id: string; slug: string }) {
+  return request("/api/v1/gateways", operatorKey, gatewaySchema, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function loadProviderCredentials(operatorKey: string) {
+  return request("/api/v1/provider-credentials", operatorKey, z.array(providerCredentialSchema));
+}
+
+export async function loadRoutes(operatorKey: string) {
+  return request("/api/v1/routes", operatorKey, z.array(routeSchema));
+}
+
+export async function createRoute(operatorKey: string, input: RouteCreateInput) {
+  await request("/api/v1/routes", operatorKey, routeSchema.pick({
+    id: true,
+    created_at: true,
+    gateway_id: true,
+    provider_credential_id: true,
+    name: true,
+    priority: true,
+    weight: true,
+    match_metadata: true,
+    enabled: true,
+  }), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateRoute(
+  operatorKey: string,
+  routeId: string,
+  input: { priority?: number; weight?: number; enabled?: boolean },
+) {
+  return request(`/api/v1/routes/${encodeURIComponent(routeId)}`, operatorKey, routeSchema.pick({
+    id: true,
+    created_at: true,
+    priority: true,
+    weight: true,
+    enabled: true,
+  }), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function loadPolicies(operatorKey: string) {
+  return request("/api/v1/policies", operatorKey, z.array(policySchema));
+}
+
+export async function replacePolicy(operatorKey: string, gatewayId: string, input: PolicyInput) {
+  return request(`/api/v1/policies/${encodeURIComponent(gatewayId)}`, operatorKey, policySchema, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });

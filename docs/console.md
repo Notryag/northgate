@@ -1,6 +1,6 @@
 # Operator console
 
-Status: phase 1 implemented  
+Status: phase 2 implemented
 Last reviewed: 2026-07-22
 
 The Northgate console is an operator workspace for configuration, usage, and
@@ -23,7 +23,10 @@ The accepted navigation is:
 | Pricing | Append-only model price versions |
 
 Phase 1 implements the shared shell, Overview, Requests, Usage, and Pricing.
-The remaining areas stay ordered after the diagnostic workflow is usable.
+Phase 2 implements Gateway selection and creation, Route creation and bounded
+traffic-field updates, trusted metadata match configuration, and Gateway Policy
+replacement. Applications, Provider credential writes, and Operations remain in
+the ordered backlog.
 
 The implemented request workspace lists up to 100 recent records without
 requiring a correlation filter, supports paired metadata filtering, opens a
@@ -72,6 +75,6 @@ future security work, not implied by the frontend framework.
 1. Shared application shell, access dialog, routing, query client, and API error handling.
 2. Recent-request list, correlation search, and request diagnostic detail.
 3. Existing overview, usage, tenant, route, and pricing workflows migrated from the single page.
-4. Gateway, route, and policy management.
+4. Completed on 2026-07-22: Gateway, route, and policy management.
 5. Organization, project, application-key, and provider-credential management.
-6. Operations workspace, responsive verification, and browser regression coverage.
+6. Operations workspace and Web browser regression coverage.

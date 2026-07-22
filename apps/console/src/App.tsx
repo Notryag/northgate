@@ -7,6 +7,7 @@ import {
   Menu as MenuIcon,
   ReceiptText,
   SearchCode,
+  Network,
 } from "lucide-react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
@@ -17,12 +18,14 @@ const RequestsPage = lazy(() => import("./pages/RequestsPage").then((module) => 
 const RequestDetailPage = lazy(() => import("./pages/RequestDetailPage").then((module) => ({ default: module.RequestDetailPage })));
 const UsagePage = lazy(() => import("./pages/UsagePage").then((module) => ({ default: module.UsagePage })));
 const PricingPage = lazy(() => import("./pages/PricingPage").then((module) => ({ default: module.PricingPage })));
+const GatewaysPage = lazy(() => import("./pages/GatewaysPage").then((module) => ({ default: module.GatewaysPage })));
 
 const { Header, Sider, Content } = Layout;
 
 const navigation = [
   { key: "/overview", label: "Overview", icon: <Gauge size={17} /> },
   { key: "/requests", label: "Requests", icon: <SearchCode size={17} /> },
+  { key: "/gateways", label: "Gateways", icon: <Network size={17} /> },
   { key: "/usage", label: "Usage", icon: <BarChart3 size={17} /> },
   { key: "/pricing", label: "Pricing", icon: <ReceiptText size={17} /> },
 ];
@@ -79,6 +82,7 @@ export function App() {
               <Route path="/overview" element={<OverviewPage />} />
               <Route path="/requests" element={<RequestsPage />} />
               <Route path="/requests/:requestId" element={<RequestDetailPage />} />
+              <Route path="/gateways" element={<GatewaysPage />} />
               <Route path="/usage" element={<UsagePage />} />
               <Route path="/pricing" element={<PricingPage />} />
               <Route path="*" element={<Navigate to="/overview" replace />} />
