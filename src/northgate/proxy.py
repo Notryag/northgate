@@ -12,6 +12,7 @@ from anyio import CancelScope
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from northgate.attempt_execution import execute_provider_attempt
 from northgate.config import Settings
 from northgate.exact_cache import (
     CacheEntry,
@@ -1424,16 +1425,14 @@ async def proxy_chat_completions(
                     retryable=True,
                 )
 
-        upstream_request = provider_adapter(candidate.adapter).build_request(
+        transport_result = await execute_provider_attempt(
             client,
             candidate,
             forwarded_headers=forwarded_request_headers,
             body=body,
             model=model,
         )
-        try:
-            response = await client.send(upstream_request, stream=True)
-        except httpx.TimeoutException:
+        if transport_result.failure == "provider_timeout":
             totals.ambiguous = True
             last_failure = "provider_timeout"
             await _settle_attempt_with_outbox(
@@ -1460,9 +1459,8 @@ async def proxy_chat_completions(
                 )
             except RouteHealthUnavailableError:
                 await logger.aexception("route_health_settlement_failed", route=health_route_key)
-        except httpx.TransportError as exc:
-            is_connection_failure = isinstance(exc, httpx.ConnectError)
-            if not is_connection_failure:
+        elif transport_result.failure in ("connection_error", "transport_ambiguous"):
+            if transport_result.failure == "transport_ambiguous":
                 totals.ambiguous = True
             last_failure = "provider_unavailable"
             await _settle_attempt_with_outbox(
@@ -1472,7 +1470,7 @@ async def proxy_chat_completions(
                 route=candidate,
                 request_id=request_id,
                 attempt_id=attempt_id,
-                outcome="connection_error" if is_connection_failure else "transport_ambiguous",
+                outcome=transport_result.failure,
                 status_code=None,
                 provider_request_id=None,
                 started_at=attempt_started_at,
@@ -1490,6 +1488,9 @@ async def proxy_chat_completions(
             except RouteHealthUnavailableError:
                 await logger.aexception("route_health_settlement_failed", route=health_route_key)
         else:
+            response = transport_result.response
+            if response is None:
+                raise RuntimeError("provider attempt completed without a response or failure")
             retryable_status = response.status_code in candidate.retry_status_codes
             exhausted_retryable_server_error = (
                 retryable_status and not has_next and response.status_code >= 500

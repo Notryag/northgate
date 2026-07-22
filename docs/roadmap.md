@@ -157,6 +157,9 @@ Implemented so far:
 - Route-planning extraction: application-key route resolution, metadata-based
   candidate selection, and primary adapter validation now live in
   `route_planning.py`.
+- Provider-attempt transport extraction: adapter request construction, streaming
+  send, and timeout/connect/ambiguous transport classification now live in
+  `attempt_execution.py` with focused outcome tests.
 - Bounded settlement failure metrics for request, attempt, and policy stages.
 - Full stream-finalization cancellation shielding with independently suspended
   close, cache, route-health, attempt, request, and policy boundaries.

@@ -104,8 +104,11 @@ dimensions with their trust class visible.
    deployments that enable the handoff.
 3. In progress: bounded body/metadata/model/header parsing lives in
    `proxy_input.py`; application-key route resolution, metadata selection, and
-   primary validation live in `route_planning.py`. Extract attempt execution and
-   stream relay next behind behavior-preserving interfaces.
+   primary validation live in `route_planning.py`; provider request construction,
+   streaming send, and transport-failure classification live in
+   `attempt_execution.py`. Continue by folding retryable-response consumption into
+   a terminal attempt result, then extract stream relay behind a behavior-preserving
+   interface.
 4. Add metadata trust classes and value binding, then migrate route matching to
    trusted metadata only.
 5. Compile and atomically swap versioned gateway snapshots; define stale-snapshot
