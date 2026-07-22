@@ -20,6 +20,7 @@ class AttemptTotals:
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_prompt_tokens: int = 0
+    cached_prompt_tokens_complete: bool = True
     cost_microusd: int = 0
     has_usage: bool = False
     has_cost: bool = False
@@ -30,7 +31,10 @@ class AttemptTotals:
             self.prompt_tokens += usage.prompt_tokens or 0
             self.completion_tokens += usage.completion_tokens or 0
             self.total_tokens += usage.total_tokens
-            self.cached_prompt_tokens += usage.cached_prompt_tokens or 0
+            if usage.cached_prompt_tokens is None:
+                self.cached_prompt_tokens_complete = False
+            else:
+                self.cached_prompt_tokens += usage.cached_prompt_tokens
             self.has_usage = True
         if cost_microusd is not None:
             self.cost_microusd += cost_microusd
@@ -43,7 +47,9 @@ class AttemptTotals:
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
             total_tokens=self.total_tokens,
-            cached_prompt_tokens=self.cached_prompt_tokens,
+            cached_prompt_tokens=(
+                self.cached_prompt_tokens if self.cached_prompt_tokens_complete else None
+            ),
         )
 
 

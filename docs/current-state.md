@@ -21,6 +21,10 @@ including tool calls and provider-reported usage. Responses API, Anthropic
 Messages, embeddings, image, audio, MCP, RAG, and agent execution are not
 implemented data-plane protocols.
 
+Provider cached-prompt usage preserves three distinct states: a reported zero,
+a reported positive value, and missing provider detail. Request-level aggregation
+remains missing if any usage-bearing attempt omits cached-prompt detail.
+
 Provider adapters currently cover OpenAI-compatible and Azure OpenAI request
 construction. Northgate preserves provider differences where they affect URL,
 authentication, retry, usage, or error behavior.
@@ -176,7 +180,7 @@ CI has separate jobs:
   `integration` with store failures configured to fail rather than skip.
 
 At this review, migration `0016` is the single Alembic head. The local suite has
-90 non-integration and 9 real-store integration tests. Counts are a snapshot, not
+94 non-integration and 9 real-store integration tests. Counts are a snapshot, not
 a contract; new behavior should add proportional coverage.
 
 ## Open work
