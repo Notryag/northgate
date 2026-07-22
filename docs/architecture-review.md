@@ -17,7 +17,7 @@ settleable, and recoverable AI traffic for agent applications.
 
 | Proposal | Decision | Reason and next boundary |
 | --- | --- | --- |
-| Durable settlement coordinator and reconciliation worker | Implemented; rollout pending | Revisions `0012`/`0013`, conflict-aware idempotent PostgreSQL/Redis settlement, `SKIP LOCKED` worker, reconciliation guards, recovery tests, metrics, and guarded proxy handoff are implemented. Production profiles must still deploy and monitor the worker before enabling it. |
+| Durable settlement coordinator and reconciliation worker | Implemented; rollout pending | Revisions `0012`/`0013`/`0016`, versioned conflict-aware PostgreSQL/Redis settlement, `SKIP LOCKED` worker, reconciliation guards, retention, recovery tests, metrics, and guarded proxy handoff are implemented. Production profiles must still deploy and monitor the worker before enabling it. |
 | Decompose `proxy_chat_completions` into a request pipeline | Adopt incrementally | The function owns too many lifecycle stages. Extract typed context and stage services while preserving one endpoint and its existing behavior. Do not combine this with a protocol expansion. |
 | Bind or sign routing metadata values | Adopt before adding more metadata routes | An allowed key is not proof that its caller-supplied value is trustworthy. Attribution metadata and route-affecting metadata need separate trust rules. |
 | Real PostgreSQL, Redis, streaming, cancellation, and recovery-race integration tests | Implemented in CI | A dedicated fail-closed job applies migrations and runs the marked real-store suite, including delayed outbox versus reconciliation, conflict, and exact replay paths. |
@@ -78,10 +78,12 @@ capacity and mark an outcome ambiguous, but must not invent token or cost values
 
 ## Metadata trust model
 
-Until value binding is implemented, caller-provided metadata is suitable for
-correlation and attribution only. Operators must not use it to select privileged
-models, higher budgets, regulated data regions, production environments, or any
-other authorization-sensitive route.
+Fixed-value binding is implemented. Trusted application keys use server-derived
+project/application identity and operator-configured fixed values for route
+selection. Caller-provided metadata remains suitable for correlation and
+attribution only. Historical keys in explicit `legacy` mode may still route on
+caller values and must not select privileged models, higher budgets, regulated
+data regions, production environments, or any other authorization-sensitive route.
 
 The intended model separates:
 
@@ -93,6 +95,8 @@ The intended model separates:
 Route matching and policy subjects may consume only server-derived, fixed, or
 verified signed dimensions. Analytics may retain explicitly allowed untrusted
 dimensions with their trust class visible.
+
+Signed dynamic dimensions are still a design target, not implemented behavior.
 
 ## Ordered implementation slices
 

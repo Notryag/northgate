@@ -3,6 +3,11 @@
 Status: accepted  
 Last reviewed: 2026-07-22
 
+The verification cadence below is normative. The production verification log is
+append-oriented historical evidence and may mention earlier migration heads,
+test counts, readiness behavior, or deployed revisions. Use
+[Current implementation state](current-state.md) for present behavior.
+
 ## Verification cadence
 
 Development should keep the main implementation flow moving and use concentrated

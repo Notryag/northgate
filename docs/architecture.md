@@ -1,7 +1,11 @@
 # Architecture
 
 Status: accepted  
-Last reviewed: 2026-07-15
+Last reviewed: 2026-07-22
+
+This page defines stable boundaries and invariants. See
+[Current implementation state](current-state.md) for the exact implemented
+runtime and remaining gaps.
 
 ## System boundary
 
@@ -52,16 +56,19 @@ separate so they can be scaled independently later.
 6. Forward the provider-native request and preserve streaming semantics.
 7. Capture status, first-token latency, total latency, provider request ID, exact-cache result,
    provider-reported usage, and provider-reported cached prompt tokens.
-8. Settle actual token and cost usage exactly once.
-9. Release concurrency capacity and persist the terminal request record.
+8. Persist terminal settlement intent when the durable outbox is enabled, then
+   attempt its database and Redis policy stages immediately.
+9. Persist the terminal request/attempt records and release concurrency capacity
+   exactly once; leave failed stages recoverable by the settlement worker.
 10. Emit metrics and traces without credentials or content by default.
 
 ## Storage ownership
 
 PostgreSQL is authoritative for organizations, projects, gateways, keys,
 encrypted provider credentials, routes, policies, pricing, audit events, and
-settled usage. Redis contains rate-window counters, concurrency leases, short
-cache entries, and other reconstructible state.
+settled usage. Durable settlement events also live in PostgreSQL. Redis contains
+rate-window counters, concurrency leases, short cache entries, circuit state,
+worker heartbeat, and other reconstructible state.
 
 The request path must not synchronously run expensive analytics queries.
 Usage writes should be append-oriented and idempotent by request ID.
@@ -84,6 +91,7 @@ remains conservative and retains its reservation rather than inventing usage.
 
 - Provider credentials never leave Northgate and are encrypted at rest.
 - Application keys are stored as one-way digests.
-- Caller metadata does not grant authorization.
+- Caller metadata does not grant authorization or trusted route selection. Only
+  server-derived and key-fixed values are trusted today.
 - Logs and errors never contain authorization headers or provider credentials.
 - Prompt and response content is not persisted unless a gateway explicitly opts in.

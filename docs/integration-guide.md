@@ -105,9 +105,10 @@ stale request and attempt records as `settlement_incomplete`. It does not fabric
 token or cost values. Re-running it is safe. Use a threshold longer than the
 maximum expected provider request and settlement duration.
 
-Migration `0012` creates the durable settlement outbox and `0013` adds the
-multi-event keys required by the current worker. The worker can drain currently
-available events once and exit:
+Migration `0012` creates the durable settlement outbox, `0013` adds multi-event
+keys, and `0016` versions payloads and indexes the recoverable queue. Apply the
+single current Alembic head before starting the current worker. The worker can
+drain currently available events once and exit:
 
 ```sh
 uv run northgate-worker --once
@@ -129,7 +130,7 @@ Repeat the bounded cleanup command until it reports `deleted_events=0` when a
 large historical backlog must be removed. It never deletes retryable or failed
 events.
 
-Enable the guarded provider-response handoff only after migration `0013`, the
+Enable the guarded provider-response handoff only after migration `0016`, the
 worker, metrics scraping, and alert rules are active:
 
 ```sh

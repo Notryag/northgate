@@ -6,6 +6,10 @@ Last reviewed: 2026-07-17
 The OpenAI chat-completions path and initial database-backed control plane are
 implemented. Other provider-native paths remain design proposals.
 
+For a compact implemented endpoint and runtime inventory, read
+[Current implementation state](current-state.md). Paths under a `Proposed`
+heading are not evidence that a route exists in the application.
+
 ## Protocol strategy
 
 Northgate should support provider-native protocols and an OpenAI-compatible
@@ -13,8 +17,9 @@ entry point. Compatibility means preserving documented request, response, and
 stream behavior; it does not mean forcing every provider feature into one
 lowest-common-denominator schema.
 
-The first implementation target is OpenAI-compatible chat completions and
-responses because Dayboard currently uses an OpenAI-compatible model client.
+The implemented first target is OpenAI-compatible chat completions because
+Dayboard uses an OpenAI-compatible model client. Responses and provider-native
+paths remain proposals.
 
 ## Proposed data-plane paths
 
@@ -97,7 +102,9 @@ The current implementation forwards chunks without whole-response buffering,
 closes the upstream response on client disconnect, and extracts reported usage
 from JSON responses and LF- or CRLF-delimited terminal SSE events. It records
 provider-reported cached prompt tokens separately from total prompt tokens.
-Durable settlement is enabled with `NORTHGATE_USAGE_PERSISTENCE_ENABLED`.
+Usage persistence is enabled with `NORTHGATE_USAGE_PERSISTENCE_ENABLED`. Durable
+outbox recovery additionally requires `NORTHGATE_SETTLEMENT_OUTBOX_ENABLED` and
+the independently deployed settlement worker.
 
 ## Response headers
 

@@ -10,6 +10,18 @@ closed only when its prevention, detection, and recovery criteria are verified.
 The broader sequencing and accepted tradeoffs are recorded in the
 [architecture review](architecture-review.md).
 
+## Open items at a glance
+
+| Area | What remains | Where completion is defined |
+| --- | --- | --- |
+| Metadata trust | Replace legacy keys, add signed dynamic values with replay bounds, and audit fixed-value changes | Metadata section below |
+| Settlement incident closure | Connect production alerts and complete the production-like soak criteria after deployment | Streaming lifecycle section below |
+
+The settlement race, CI integration coverage, conflict detection, readiness
+policy, payload versioning, queue index, and completed-event retention work are
+implemented. Their detailed bullets below are retained as incident and
+verification evidence, not as open implementation tasks.
+
 ## Caller metadata values are not bound to application identity
 
 Status: fixed-value binding implemented; legacy migration and signed metadata remain open
