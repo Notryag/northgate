@@ -62,6 +62,7 @@ from northgate.route_health import (
     route_health_key as _route_health_key,
 )
 from northgate.route_planning import (
+    accounting_metadata,
     plan_routes,
     resolve_routes,
     validate_primary_route,
@@ -228,6 +229,7 @@ async def proxy_chat_completions(
             retryable=False,
         )
     route = routes[0]
+    ledger_metadata, ledger_metadata_trust = accounting_metadata(route, request_metadata)
 
     try:
         proxy_input = await read_proxy_request_input(
@@ -362,7 +364,8 @@ async def proxy_chat_completions(
                     request_id=request_id,
                     route=cached_route,
                     model=model,
-                    request_metadata=request_metadata,
+                    request_metadata=ledger_metadata,
+                    request_metadata_trust=ledger_metadata_trust,
                     price_id=None,
                     estimated_tokens=0,
                     cache_status="hit",
@@ -495,7 +498,8 @@ async def proxy_chat_completions(
                         request_id=request_id,
                         route=route,
                         model=model,
-                        request_metadata=request_metadata,
+                        request_metadata=ledger_metadata,
+                        request_metadata_trust=ledger_metadata_trust,
                         price_id=prices[0].price_id if prices[0] is not None else None,
                         estimated_tokens=estimated_tokens,
                         cache_status=cache_result,
@@ -533,7 +537,8 @@ async def proxy_chat_completions(
                 request_id=request_id,
                 route=route,
                 model=model,
-                request_metadata=request_metadata,
+                request_metadata=ledger_metadata,
+                request_metadata_trust=ledger_metadata_trust,
                 price_id=price.price_id if price is not None else None,
                 estimated_tokens=(estimated_input_tokens + estimated_output_tokens)
                 * possible_attempts,

@@ -73,6 +73,10 @@ verify route selection, and revoke the old keys. Roll back the application versi
 and restore the pre-upgrade database backup if trusted routing causes an unexpected
 outage.
 
+Revision `0015` adds nullable metadata trust classifications to request records.
+Existing historical records remain unclassified and are excluded from trusted
+tenant aggregation; no historical trust value is inferred.
+
 Local downgrade from `0013` to `0012` requires removing all but one settlement
 event per request first. Production rollback remains backup restore plus the prior
 application version; do not delete settlement history or downgrade in place.

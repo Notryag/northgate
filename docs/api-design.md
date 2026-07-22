@@ -80,6 +80,11 @@ issuing a trusted replacement key with fixed routing values, moving the caller,
 and revoking the legacy key. Legacy mode is a temporary compatibility boundary;
 caller-supplied values must not select authorization-sensitive routes.
 
+Revision `0015` stores a trust class beside every recorded metadata value:
+`server`, `fixed`, `untrusted`, or `legacy`. Tenant usage aggregation includes
+only `fixed` and future verified `signed` values. Request-diagnostic results expose
+the selected metadata key's trust class.
+
 ## Streaming
 
 - Preserve provider event order and payloads.

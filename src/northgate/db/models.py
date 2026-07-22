@@ -156,6 +156,7 @@ class RequestRecord(Base):
     provider: Mapped[str] = mapped_column(String(40))
     model: Mapped[str | None] = mapped_column(String(200))
     request_metadata: Mapped[dict[str, str] | None] = mapped_column(JSON)
+    request_metadata_trust: Mapped[dict[str, str] | None] = mapped_column(JSON)
     price_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("model_prices.id", ondelete="SET NULL")
     )

@@ -65,5 +65,18 @@ def plan_routes(
     return select_routes(routes, metadata, request_id)
 
 
+def accounting_metadata(
+    route: ResolvedRoute,
+    caller_metadata: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    metadata = dict(caller_metadata)
+    caller_trust = "legacy" if route.metadata_routing_mode == "legacy" else "untrusted"
+    trust = {key: caller_trust for key in caller_metadata}
+    for key, value in route.trusted_metadata:
+        metadata[key] = value
+        trust[key] = "server" if key.startswith("northgate.") else "fixed"
+    return metadata, trust
+
+
 def validate_primary_route(route: ResolvedRoute, model: str | None) -> None:
     provider_adapter(route.adapter).validate(route, model)

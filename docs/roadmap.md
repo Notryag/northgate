@@ -170,6 +170,9 @@ Implemented so far:
 - Metadata binding migration `0014`: trusted application keys route only on
   server-derived project/application identity and operator-configured fixed
   values. Existing keys retain explicit legacy matching for staged replacement.
+- Metadata trust ledger migration `0015`: request records preserve `server`,
+  `fixed`, `untrusted`, and `legacy` classes; tenant aggregation excludes
+  caller-controlled values while diagnostics expose their class.
 - Bounded settlement failure metrics for request, attempt, and policy stages.
 - Full stream-finalization cancellation shielding with independently suspended
   close, cache, route-health, attempt, request, and policy boundaries.

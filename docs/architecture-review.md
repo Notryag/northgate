@@ -114,8 +114,10 @@ dimensions with their trust class visible.
    using shared guarded handoff helpers from `proxy_settlement.py`.
 4. In progress: revision `0014` adds fixed metadata binding and server-derived
    project/application identity. Trusted keys route only on those values; existing
-   keys retain explicit legacy behavior for replacement-key migration. Add signed
-   dynamic values, analytics trust classes, and remove legacy keys next.
+   keys retain explicit legacy behavior for replacement-key migration. Revision
+   `0015` preserves trust classes in the request ledger and restricts tenant
+   aggregation to trusted values. Add signed dynamic values, audit changes, and
+   remove legacy keys next.
 5. Compile and atomically swap versioned gateway snapshots; define stale-snapshot
    and credential-rotation behavior.
 6. Add independent data-plane and control-plane entry points and the first

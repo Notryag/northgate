@@ -36,13 +36,15 @@ Implemented on 2026-07-22:
   reserves the `northgate.*` namespace for server identity.
 - Negative tests prove a caller claiming another tenant cannot override a trusted
   key and that legacy caller matching remains available during migration.
+- Revision `0015` records per-key metadata trust classes in the request ledger.
+  Tenant aggregation accepts only `fixed` or future verified `signed` values;
+  diagnostic metadata queries expose the trust class for each matching request.
 
 Still required:
 
 - replace and revoke all legacy keys that rely on caller-selected routes;
 - implement signed dynamic metadata with replay bounds;
-- preserve metadata trust classes in request analytics and audit fixed-value
-  configuration changes;
+- audit fixed-value configuration changes;
 - restrict future metadata-derived policy subjects to trusted values.
 
 Closure criteria:

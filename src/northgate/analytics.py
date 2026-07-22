@@ -288,6 +288,7 @@ async def usage_tenants(
     if gateway_id is not None:
         filters.append(RequestRecord.gateway_id == gateway_id)
     tenant_id = RequestRecord.request_metadata["tenant_id"].as_string().label("tenant_id")
+    tenant_trust = RequestRecord.request_metadata_trust["tenant_id"].as_string()
     statement = (
         select(
             tenant_id,
@@ -304,7 +305,7 @@ async def usage_tenants(
             func.coalesce(func.sum(RequestRecord.cost_microusd), 0).label("cost_microusd"),
             func.avg(RequestRecord.latency_ms).label("average_latency_ms"),
         )
-        .where(*filters)
+        .where(*filters, tenant_trust.in_(("fixed", "signed")))
         .group_by(tenant_id)
         .order_by(func.count().desc(), tenant_id.asc().nulls_last())
     )
@@ -449,6 +450,7 @@ async def usage_requests(
                     "total_tokens": record.total_tokens,
                     "cached_prompt_tokens": record.cached_prompt_tokens,
                     "cache_status": record.cache_status,
+                    "metadata_trust": (record.request_metadata_trust or {}).get(metadata_key),
                     "latency_ms": record.latency_ms,
                     "started_at": record.started_at.isoformat(),
                     "completed_at": record.completed_at.isoformat()
