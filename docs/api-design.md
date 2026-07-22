@@ -175,6 +175,14 @@ code. This operator-only endpoint is the generic correlation surface for an
 application run or another authenticated metadata dimension. It does not return
 prompt or response content.
 
+`/api/v1/diagnostics/requests/{request_id}` joins the request, ordered provider
+attempts, and redacted settlement-event progress into diagnostics schema version
+`1`. `/api/v1/diagnostics/correlated` accepts a bounded metadata filter, maximum
+90-day range, and limit up to 100; it returns ordered joined diagnostics,
+aggregate known usage/cache/cost, missing-usage counts, and stable finding codes.
+Settlement payloads and request metadata values are not included in individual
+request results. Both endpoints require the operator key.
+
 ## Implemented control-plane resources
 
 ```text

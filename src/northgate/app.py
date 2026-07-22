@@ -22,6 +22,7 @@ from northgate.console import console_index
 from northgate.control import router as control_router
 from northgate.credentials import CredentialCipher
 from northgate.db.database import Database
+from northgate.diagnostics import diagnostics_correlated, diagnostics_request
 from northgate.exact_cache import ExactCache
 from northgate.logging import configure_logging
 from northgate.metrics import Metrics, metrics_response
@@ -249,6 +250,16 @@ def create_app(
     app.add_api_route(
         "/api/v1/usage/requests/{request_id}/attempts",
         usage_attempts,
+        methods=["GET"],
+    )
+    app.add_api_route(
+        "/api/v1/diagnostics/requests/{request_id}",
+        diagnostics_request,
+        methods=["GET"],
+    )
+    app.add_api_route(
+        "/api/v1/diagnostics/correlated",
+        diagnostics_correlated,
         methods=["GET"],
     )
     app.mount(
