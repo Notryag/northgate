@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     usage_persistence_enabled: bool = False
     settlement_outbox_enabled: bool = False
     settlement_worker_heartbeat_ttl_seconds: int = Field(default=15, ge=5, le=300)
+    settlement_readiness_max_pending_age_seconds: int = Field(default=300, ge=30, le=86400)
+    settlement_completed_retention_days: int = Field(default=30, ge=1, le=3650)
     gateway_slug: str = "default"
     allowed_metadata_keys: str = "tenant_id,user_id,run_id,environment"
     max_request_body_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)

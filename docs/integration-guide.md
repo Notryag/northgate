@@ -119,6 +119,16 @@ or run continuously with a bounded poll interval:
 uv run northgate-worker --poll-seconds 0.25
 ```
 
+Run completed-event retention from a scheduler appropriate to the deployment:
+
+```sh
+uv run northgate-worker --cleanup-completed --retention-days 30 --cleanup-batch-size 1000
+```
+
+Repeat the bounded cleanup command until it reports `deleted_events=0` when a
+large historical backlog must be removed. It never deletes retryable or failed
+events.
+
 Enable the guarded provider-response handoff only after migration `0013`, the
 worker, metrics scraping, and alert rules are active:
 
@@ -135,9 +145,11 @@ transport-error, and retryable-status attempts are durable independently of the
 terminal request event. `northgate-reconcile` remains the recovery backstop for
 records created before an outbox event can be written.
 
-When enabled, `/health/ready` returns `503` until at least one continuously
-running worker heartbeat is present. A stopped worker becomes unready after
-`NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS`.
+When enabled, `/health/ready` reports `ready` with `degraded: true` if no worker
+heartbeat is present but the recoverable backlog is empty or still within
+`NORTHGATE_SETTLEMENT_READINESS_MAX_PENDING_AGE_SECONDS`. It returns `503` once
+the oldest recoverable event exceeds that threshold. Worker heartbeat and
+backlog alerts remain required even during the grace period.
 
 ## Roll back
 

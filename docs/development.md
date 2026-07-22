@@ -67,8 +67,9 @@ Run the same deterministic local acceptance with:
 - Verified one request can own independent `attempt:{attempt_id}` and `terminal`
   events. Retryable status, timeout, transport error, cache hit, route-health
   failure, and attempt-ledger failure exits all use the guarded durable handoff.
-- Extended the isolated soak with worker heartbeat/readiness and failure recovery:
-  stopping the worker produced readiness `503`; stopping Redis after an active
+- Extended the isolated soak with worker heartbeat/readiness and failure recovery.
+  The current harness expects degraded readiness after stopping the worker and
+  reserves `503` for an overdue recoverable backlog. Stopping Redis after an active
   lease produced a retry event; Redis, Northgate, and the worker were restored,
   and final reconciliation reported `started=0`, `leases=0`, `pending=0`,
   `failed=0`, with 12 fallback attempts. Dedicated Compose resources were removed.

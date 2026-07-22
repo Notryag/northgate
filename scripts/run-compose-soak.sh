@@ -51,17 +51,17 @@ uv run --project "${repo_root}" python "${script_dir}/soak_requests.py" --iterat
 "${compose[@]}" up -d --force-recreate --wait northgate
 uv run --project "${repo_root}" python "${script_dir}/soak_requests.py" --iterations 5
 
-# A live worker is part of readiness whenever durable settlement is enabled.
+# Heartbeat loss is degraded while no recoverable event is overdue.
 "${compose[@]}" stop settlement-worker
 readiness=""
 for _ in $(seq 1 40); do
     readiness="$({ uv run --project "${repo_root}" python -c \
-        'import httpx; r=httpx.get("http://127.0.0.1:18082/health/ready"); print(r.status_code, r.json().get("reason", ""))'; } 2>/dev/null)"
-    [[ "${readiness}" == "503 settlement_worker_unavailable" ]] && break
+        'import httpx; r=httpx.get("http://127.0.0.1:18082/health/ready"); body=r.json(); print(r.status_code, body.get("reason", ""), str(body.get("degraded", False)).lower())'; } 2>/dev/null)"
+    [[ "${readiness}" == "200 settlement_worker_unavailable true" ]] && break
     sleep 0.25
 done
-if [[ "${readiness}" != "503 settlement_worker_unavailable" ]]; then
-    echo "Readiness did not reject a missing settlement worker: ${readiness}" >&2
+if [[ "${readiness}" != "200 settlement_worker_unavailable true" ]]; then
+    echo "Readiness did not report degraded worker state: ${readiness}" >&2
     exit 1
 fi
 

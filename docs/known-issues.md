@@ -134,6 +134,24 @@ instability was not the primary cause.
 
 ### Required hardening
 
+Settlement correctness work completed on 2026-07-22:
+
+- CI now has an isolated integration job with PostgreSQL, Redis, migrations,
+  explicit `integration` markers, and fail-closed store prerequisites. The unit
+  job excludes these tests rather than reporting environmental skips.
+- Reconciliation excludes requests with `pending`, `retry`, or `processing`
+  settlement events in both candidate selection and the guarded apply operation.
+- Settlement database updates distinguish exact idempotent replay from missing
+  or conflicting records before setting `database_settled_at` or completing an
+  event. Conflicts remain visible in `retry`/`failed` processing.
+- A real-store crossing test delays a settlement event, runs reconciliation,
+  confirms the records remain `started`, then processes the event and verifies
+  its exact terminal outcome, tokens, and cost. Separate tests cover conflict and
+  exact-terminal replay behavior.
+- Migration `0016` versions current and historical settlement payloads and adds a
+  partial recoverable-queue index. `northgate-worker --cleanup-completed` applies
+  bounded retention without deleting retryable or failed events.
+
 Implemented on 2026-07-22:
 
 - A real PostgreSQL and Redis integration test now runs three sequential SSE
@@ -185,9 +203,10 @@ Implemented on 2026-07-22:
 - Revision `0013` allows multiple idempotent events per request. Timeout,
   transport-error, and retryable-status attempts now use durable
   `attempt:{attempt_id}` events independently of the terminal request event.
-- Outbox-enabled readiness now requires at least one active worker heartbeat.
-  The isolated failure soak verified worker loss becomes unready after the TTL
-  and that a Redis settlement retry recovers across Northgate recreation.
+- Outbox-enabled readiness now reports degraded service when the worker heartbeat
+  is absent but no recoverable event is overdue. It returns `503` when the oldest
+  recoverable event exceeds the configured threshold. Worker loss and Redis
+  settlement recovery remain independently observable across recreation.
 - `northgate_settlement_worker_available` and the deployable alert rule expose
   worker heartbeat loss independently of HTTP readiness.
 - Exhausted retryable provider `5xx` responses are now drained and settled before

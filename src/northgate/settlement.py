@@ -1,11 +1,12 @@
 import argparse
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import structlog
 from redis.asyncio import Redis
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from northgate.config import get_settings
@@ -15,10 +16,26 @@ from northgate.policy import PolicyEngine
 
 logger = structlog.get_logger()
 WORKER_HEARTBEAT_PATTERN = "northgate:settlement:worker:heartbeat:*"
+RECOVERABLE_SETTLEMENT_STATUSES = ("pending", "retry", "processing")
+SETTLEMENT_PAYLOAD_SCHEMA_VERSION = 1
 
 
 class SettlementPayloadError(Exception):
     pass
+
+
+class SettlementRecordMissingError(Exception):
+    pass
+
+
+class SettlementConflictError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class SettlementBacklog:
+    pending_events: int
+    oldest_age_seconds: float
 
 
 class SettlementCoordinator:
@@ -42,6 +59,9 @@ class SettlementCoordinator:
         payload: dict[str, object],
         event_key: str = "terminal",
     ) -> UUID:
+        normalized_payload = dict(payload)
+        normalized_payload.setdefault("schema_version", SETTLEMENT_PAYLOAD_SCHEMA_VERSION)
+        _validate_payload_schema(normalized_payload)
         policy_settled_at = datetime.now(UTC) if payload.get("policy") is None else None
         async with self.database.sessions() as session:
             existing = await session.scalar(
@@ -55,7 +75,7 @@ class SettlementCoordinator:
             event = SettlementEvent(
                 request_id=request_id,
                 event_key=event_key,
-                payload=payload,
+                payload=normalized_payload,
                 status="pending",
                 attempts=0,
                 policy_settled_at=policy_settled_at,
@@ -86,6 +106,7 @@ class SettlementCoordinator:
         if event is None:
             return False
         try:
+            _validate_payload_schema(event.payload)
             if event.database_settled_at is None:
                 await self._apply_database(event)
             if event.policy_settled_at is None:
@@ -142,51 +163,77 @@ class SettlementCoordinator:
                     if not isinstance(attempt, dict):
                         raise SettlementPayloadError("attempt must be an object or null")
                     attempt_id = UUID(_string(attempt, "id"))
-                    await session.execute(
+                    attempt_values = {
+                        "outcome": _string(attempt, "outcome"),
+                        "http_status": _optional_int(attempt, "status_code"),
+                        "provider_request_id": _optional_string(attempt, "provider_request_id"),
+                        "prompt_tokens": _optional_int(attempt, "prompt_tokens"),
+                        "completion_tokens": _optional_int(attempt, "completion_tokens"),
+                        "total_tokens": _optional_int(attempt, "total_tokens"),
+                        "cached_prompt_tokens": _optional_int(attempt, "cached_prompt_tokens"),
+                        "cost_microusd": _optional_int(attempt, "cost_microusd"),
+                        "latency_ms": _optional_int(attempt, "latency_ms"),
+                    }
+                    result = await session.execute(
                         update(ProviderAttemptRecord)
                         .where(
                             ProviderAttemptRecord.id == attempt_id,
                             ProviderAttemptRecord.outcome == "started",
                         )
                         .values(
-                            outcome=_string(attempt, "outcome"),
-                            http_status=_optional_int(attempt, "status_code"),
-                            provider_request_id=_optional_string(attempt, "provider_request_id"),
-                            prompt_tokens=_optional_int(attempt, "prompt_tokens"),
-                            completion_tokens=_optional_int(attempt, "completion_tokens"),
-                            total_tokens=_optional_int(attempt, "total_tokens"),
-                            cached_prompt_tokens=_optional_int(attempt, "cached_prompt_tokens"),
-                            cost_microusd=_optional_int(attempt, "cost_microusd"),
-                            latency_ms=_optional_int(attempt, "latency_ms"),
+                            **attempt_values,
                             completed_at=now,
                         )
                     )
+                    if result.rowcount != 1:
+                        existing_attempt = await session.get(ProviderAttemptRecord, attempt_id)
+                        _assert_terminal_match(
+                            existing_attempt,
+                            attempt_values,
+                            record_name="provider attempt",
+                            identifier=str(attempt_id),
+                        )
+                        if existing_attempt.request_id != event.request_id:
+                            raise SettlementConflictError(
+                                f"provider attempt {attempt_id} belongs to another request"
+                            )
                 if request is not None:
                     if not isinstance(request, dict):
                         raise SettlementPayloadError("request must be an object or null")
-                    await session.execute(
+                    request_values = {
+                        "outcome": _string(request, "outcome"),
+                        "http_status": _optional_int(request, "status_code"),
+                        "provider_request_id": _optional_string(request, "provider_request_id"),
+                        "prompt_tokens": _optional_int(request, "prompt_tokens"),
+                        "completion_tokens": _optional_int(request, "completion_tokens"),
+                        "total_tokens": _optional_int(request, "total_tokens"),
+                        "cached_prompt_tokens": _optional_int(request, "cached_prompt_tokens"),
+                        "cost_microusd": _optional_int(request, "cost_microusd"),
+                        "route_id": _optional_uuid(request, "route_id"),
+                        "provider": _string(request, "provider"),
+                        "price_id": _optional_uuid(request, "price_id"),
+                        "latency_ms": _optional_int(request, "latency_ms"),
+                        "first_token_ms": _optional_int(request, "first_token_ms"),
+                    }
+                    result = await session.execute(
                         update(RequestRecord)
                         .where(
                             RequestRecord.request_id == event.request_id,
                             RequestRecord.outcome == "started",
                         )
                         .values(
-                            outcome=_string(request, "outcome"),
-                            http_status=_optional_int(request, "status_code"),
-                            provider_request_id=_optional_string(request, "provider_request_id"),
-                            prompt_tokens=_optional_int(request, "prompt_tokens"),
-                            completion_tokens=_optional_int(request, "completion_tokens"),
-                            total_tokens=_optional_int(request, "total_tokens"),
-                            cached_prompt_tokens=_optional_int(request, "cached_prompt_tokens"),
-                            cost_microusd=_optional_int(request, "cost_microusd"),
-                            route_id=_optional_uuid(request, "route_id"),
-                            provider=_string(request, "provider"),
-                            price_id=_optional_uuid(request, "price_id"),
-                            latency_ms=_optional_int(request, "latency_ms"),
-                            first_token_ms=_optional_int(request, "first_token_ms"),
+                            **request_values,
                             completed_at=now,
                         )
                     )
+                    if result.rowcount != 1:
+                        existing_request = await session.get(RequestRecord, event.request_id)
+                        _assert_terminal_match(
+                            existing_request,
+                            request_values,
+                            record_name="request",
+                            identifier=event.request_id,
+                        )
                 await session.execute(
                     update(SettlementEvent)
                     .where(SettlementEvent.id == event.id)
@@ -263,6 +310,43 @@ async def settlement_worker_available(redis: Redis) -> bool:
     return False
 
 
+async def settlement_backlog(database: Database) -> SettlementBacklog:
+    async with database.sessions() as session:
+        count, oldest = (
+            await session.execute(
+                select(func.count(), func.min(SettlementEvent.created_at)).where(
+                    SettlementEvent.status.in_(RECOVERABLE_SETTLEMENT_STATUSES)
+                )
+            )
+        ).one()
+    age = max(0.0, (datetime.now(UTC) - oldest).total_seconds()) if oldest is not None else 0.0
+    return SettlementBacklog(pending_events=int(count), oldest_age_seconds=age)
+
+
+async def cleanup_completed_events(
+    database: Database,
+    *,
+    retention_days: int,
+    batch_size: int,
+) -> int:
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    candidate_ids = (
+        select(SettlementEvent.id)
+        .where(
+            SettlementEvent.status == "completed",
+            SettlementEvent.completed_at < cutoff,
+        )
+        .order_by(SettlementEvent.completed_at)
+        .limit(batch_size)
+    )
+    async with database.sessions() as session:
+        result = await session.execute(
+            delete(SettlementEvent).where(SettlementEvent.id.in_(candidate_ids))
+        )
+        await session.commit()
+    return max(0, result.rowcount)
+
+
 async def _maintain_worker_heartbeat(redis: Redis, ttl_seconds: int) -> None:
     key = f"northgate:settlement:worker:heartbeat:{uuid4()}"
     interval = max(1.0, ttl_seconds / 3)
@@ -310,6 +394,35 @@ def _optional_uuid(payload: dict[str, object], key: str) -> UUID | None:
     return UUID(value) if value is not None else None
 
 
+def _validate_payload_schema(payload: dict[str, object]) -> None:
+    version = payload.get("schema_version", SETTLEMENT_PAYLOAD_SCHEMA_VERSION)
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != SETTLEMENT_PAYLOAD_SCHEMA_VERSION
+    ):
+        raise SettlementPayloadError(f"unsupported settlement payload schema version: {version}")
+
+
+def _assert_terminal_match(
+    record: ProviderAttemptRecord | RequestRecord | None,
+    expected: dict[str, object],
+    *,
+    record_name: str,
+    identifier: str,
+) -> None:
+    if record is None:
+        raise SettlementRecordMissingError(f"{record_name} {identifier} does not exist")
+    mismatched = [field for field, value in expected.items() if getattr(record, field) != value]
+    if record.completed_at is None:
+        mismatched.append("completed_at")
+    if mismatched:
+        fields = ", ".join(sorted(mismatched))
+        raise SettlementConflictError(
+            f"{record_name} {identifier} conflicts with settlement fields: {fields}"
+        )
+
+
 async def _run_cli(*, once: bool, poll_seconds: float) -> None:
     settings = get_settings()
     database = Database(settings.database_url.get_secret_value())
@@ -350,6 +463,20 @@ async def _run_healthcheck() -> None:
         await redis.aclose()
 
 
+async def _run_cleanup(*, retention_days: int, batch_size: int) -> None:
+    settings = get_settings()
+    database = Database(settings.database_url.get_secret_value())
+    try:
+        deleted = await cleanup_completed_events(
+            database,
+            retention_days=retention_days,
+            batch_size=batch_size,
+        )
+        print(f"deleted_events={deleted}")
+    finally:
+        await database.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Process durable Northgate settlement events.")
     mode = parser.add_mutually_exclusive_group()
@@ -359,12 +486,35 @@ def main() -> None:
         action="store_true",
         help="Exit successfully when a live worker heartbeat is visible.",
     )
+    mode.add_argument(
+        "--cleanup-completed",
+        action="store_true",
+        help="Delete one batch of completed events older than the retention period.",
+    )
     parser.add_argument("--poll-seconds", type=float, default=0.25)
+    parser.add_argument("--retention-days", type=int)
+    parser.add_argument("--cleanup-batch-size", type=int, default=1000)
     args = parser.parse_args()
     if not 0.05 <= args.poll_seconds <= 60:
         raise SystemExit("--poll-seconds must be between 0.05 and 60")
     if args.healthcheck:
         asyncio.run(_run_healthcheck())
+    elif args.cleanup_completed:
+        retention_days = (
+            args.retention_days
+            if args.retention_days is not None
+            else get_settings().settlement_completed_retention_days
+        )
+        if not 1 <= retention_days <= 3650:
+            raise SystemExit("--retention-days must be between 1 and 3650")
+        if not 1 <= args.cleanup_batch_size <= 10000:
+            raise SystemExit("--cleanup-batch-size must be between 1 and 10000")
+        asyncio.run(
+            _run_cleanup(
+                retention_days=retention_days,
+                batch_size=args.cleanup_batch_size,
+            )
+        )
     else:
         asyncio.run(_run_cli(once=args.once, poll_seconds=args.poll_seconds))
 

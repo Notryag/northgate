@@ -31,7 +31,11 @@ from northgate.pricing import PricingRepository
 from northgate.proxy import proxy_chat_completions
 from northgate.route_health import RouteHealthEngine
 from northgate.routing import DatabaseRouteResolver
-from northgate.settlement import SettlementCoordinator, settlement_worker_available
+from northgate.settlement import (
+    SettlementCoordinator,
+    settlement_backlog,
+    settlement_worker_available,
+)
 from northgate.tracing import Tracing
 from northgate.usage import UsageRecorder
 
@@ -190,8 +194,41 @@ def create_app(
                 return JSONResponse({"status": "not_ready"}, status_code=503)
         if settings.settlement_outbox_enabled:
             if active_redis is None or not await settlement_worker_available(active_redis):
+                if active_database is None:
+                    return JSONResponse(
+                        {"status": "not_ready", "reason": "settlement_backlog_unavailable"},
+                        status_code=503,
+                    )
+                try:
+                    backlog = await settlement_backlog(active_database)
+                except Exception:
+                    return JSONResponse(
+                        {"status": "not_ready", "reason": "settlement_backlog_unavailable"},
+                        status_code=503,
+                    )
+                backlog_details = {
+                    "pending_events": backlog.pending_events,
+                    "oldest_age_seconds": round(backlog.oldest_age_seconds, 3),
+                }
+                if (
+                    backlog.pending_events == 0
+                    or backlog.oldest_age_seconds
+                    <= settings.settlement_readiness_max_pending_age_seconds
+                ):
+                    return JSONResponse(
+                        {
+                            "status": "ready",
+                            "degraded": True,
+                            "reason": "settlement_worker_unavailable",
+                            "settlement_backlog": backlog_details,
+                        }
+                    )
                 return JSONResponse(
-                    {"status": "not_ready", "reason": "settlement_worker_unavailable"},
+                    {
+                        "status": "not_ready",
+                        "reason": "settlement_backlog_overdue",
+                        "settlement_backlog": backlog_details,
+                    },
                     status_code=503,
                 )
         return JSONResponse({"status": "ready"})

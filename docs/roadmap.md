@@ -134,6 +134,33 @@ hardening even though its immediate production failures are mitigated. See
 [Known issues and hardening work](known-issues.md) for the required integration,
 reconciliation, observability, and soak-test exit criteria.
 
+### Settlement recovery hardening
+
+Accepted on 2026-07-22 after review of the first durable-settlement implementation.
+Work is ordered by correctness risk:
+
+1. **Complete.** Make real PostgreSQL and Redis integration tests a required CI job. The job
+   must apply migrations, select tests marked `integration`, and fail rather than
+   silently skip when its stores are unavailable.
+2. **Complete.** Prevent `northgate-reconcile` from changing request or attempt records while
+   a `pending`, `retry`, or `processing` settlement event can still recover them.
+   The final apply query must repeat this guard rather than relying only on an
+   earlier candidate read.
+3. **Complete.** Treat zero-row settlement updates explicitly. They are successful only when
+   the existing record already matches the event payload's terminal fields;
+   missing or conflicting records must keep the event recoverable and visible.
+4. **Complete.** Cover the reconciliation/outbox crossing path: a delayed event protects its
+   old `started` records, then completes with the exact usage and outcome after
+   it becomes available.
+5. **Complete.** Revisit worker readiness separately. A missing heartbeat with no overdue
+   backlog should be degraded rather than necessarily removing the data plane
+   from service; an overdue recoverable backlog remains a readiness failure.
+6. **Complete.** Add settlement payload versioning, pending-worker query indexes, and a bounded
+   retention/archive policy after the correctness work is complete.
+
+All six tasks were completed and verified on 2026-07-22. The retention command is
+deliberately scheduler-neutral and operates in bounded batches.
+
 Implemented so far:
 
 - Operator-authenticated control APIs for organizations, projects, gateways,

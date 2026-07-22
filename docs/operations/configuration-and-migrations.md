@@ -30,8 +30,14 @@ settings; README sections describe behavior and safe defaults.
   `0013`, a continuously running `northgate-worker`, metrics scraping, and outbox
   alerts are present.
 - `NORTHGATE_SETTLEMENT_WORKER_HEARTBEAT_TTL_SECONDS` defaults to 15 seconds.
-  Continuous workers refresh instance-specific Redis keys, and outbox-enabled
-  readiness requires at least one non-expired key.
+  Continuous workers refresh instance-specific Redis keys.
+- `NORTHGATE_SETTLEMENT_READINESS_MAX_PENDING_AGE_SECONDS` defaults to 300
+  seconds. When no worker heartbeat is visible, readiness remains available but
+  degraded until the oldest recoverable event exceeds this age; an overdue
+  backlog returns `503`.
+- `NORTHGATE_SETTLEMENT_COMPLETED_RETENTION_DAYS` defaults to 30 days and is used
+  by `northgate-worker --cleanup-completed`. Cleanup deletes only completed
+  events, in bounded batches; retryable and failed events are retained.
 
 The following material is not recoverable from PostgreSQL and must be retained
 in the deployment secret manager:
@@ -76,6 +82,10 @@ outage.
 Revision `0015` adds nullable metadata trust classifications to request records.
 Existing historical records remain unclassified and are excluded from trusted
 tenant aggregation; no historical trust value is inferred.
+
+Revision `0016` adds `schema_version: 1` to existing settlement payloads and a
+partial worker-queue index over recoverable events. New workers reject unsupported
+payload versions instead of interpreting them with the current schema.
 
 Local downgrade from `0013` to `0012` requires removing all but one settlement
 event per request first. Production rollback remains backup restore plus the prior

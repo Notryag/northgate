@@ -6,11 +6,22 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 
 from northgate.config import get_settings
 from northgate.db.database import Database
-from northgate.db.models import ProviderAttemptRecord, RequestRecord
+from northgate.db.models import ProviderAttemptRecord, RequestRecord, SettlementEvent
+
+RECOVERABLE_SETTLEMENT_STATUSES = ("pending", "retry", "processing")
+
+
+def _has_recoverable_settlement(request_id: object):
+    return exists(
+        select(SettlementEvent.id).where(
+            SettlementEvent.request_id == request_id,
+            SettlementEvent.status.in_(RECOVERABLE_SETTLEMENT_STATUSES),
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -40,6 +51,7 @@ async def reconcile(
                     select(RequestRecord.request_id).where(
                         RequestRecord.outcome == "started",
                         RequestRecord.started_at < cutoff,
+                        ~_has_recoverable_settlement(RequestRecord.request_id),
                     )
                 )
             ).all()
@@ -50,6 +62,7 @@ async def reconcile(
                     select(ProviderAttemptRecord.id).where(
                         ProviderAttemptRecord.outcome == "started",
                         ProviderAttemptRecord.started_at < cutoff,
+                        ~_has_recoverable_settlement(ProviderAttemptRecord.request_id),
                     )
                 )
             ).all()
@@ -80,6 +93,7 @@ async def reconcile(
                     .where(
                         ProviderAttemptRecord.id.in_(attempt_ids),
                         ProviderAttemptRecord.outcome == "started",
+                        ~_has_recoverable_settlement(ProviderAttemptRecord.request_id),
                     )
                     .values(
                         outcome="settlement_incomplete",
@@ -92,6 +106,7 @@ async def reconcile(
                     .where(
                         RequestRecord.request_id.in_(request_ids),
                         RequestRecord.outcome == "started",
+                        ~_has_recoverable_settlement(RequestRecord.request_id),
                     )
                     .values(
                         outcome="settlement_incomplete",

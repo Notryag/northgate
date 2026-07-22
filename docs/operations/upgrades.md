@@ -61,8 +61,12 @@ rule configuration. Its ten-minute stale thresholds are conservative defaults;
 set them above the maximum accepted provider request plus settlement duration.
 
 When enabling durable settlement, deploy the `settlement-worker` profile in the
-same release as the application. Northgate readiness remains `503` until a worker
-heartbeat is visible, so a data-plane-only rollout cannot pass health checks.
+same release as the application. A missing worker heartbeat reports degraded
+readiness while the backlog is empty or fresh, then returns `503` when the oldest
+recoverable event exceeds
+`NORTHGATE_SETTLEMENT_READINESS_MAX_PENDING_AGE_SECONDS`. This grace period is
+not permission for a data-plane-only rollout: the topology preflight still
+requires the worker service.
 Set `NORTHGATE_SETTLEMENT_OUTBOX_ENABLED=true` before running the upgrade script;
 its topology preflight then requires the worker service and the upgrade starts,
 stops, and builds both services as one unit. The worker container healthcheck

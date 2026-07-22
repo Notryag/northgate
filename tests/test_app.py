@@ -7,6 +7,7 @@ from pydantic import SecretStr
 
 from northgate.app import create_app
 from northgate.config import Settings
+from northgate.settlement import SettlementBacklog
 
 
 @pytest.mark.anyio
@@ -105,7 +106,7 @@ def test_settlement_outbox_requires_usage_persistence() -> None:
 
 
 @pytest.mark.anyio
-async def test_outbox_readiness_requires_an_active_settlement_worker() -> None:
+async def test_outbox_readiness_fails_only_for_overdue_backlog(monkeypatch) -> None:
     class DatabaseStub:
         async def ping(self) -> bool:
             return True
@@ -121,6 +122,12 @@ async def test_outbox_readiness_requires_an_active_settlement_worker() -> None:
                 yield b"northgate:settlement:worker:heartbeat:test"
 
     redis = RedisStub()
+    current_backlog = SettlementBacklog(pending_events=0, oldest_age_seconds=0)
+
+    async def backlog_stub(_database: object) -> SettlementBacklog:
+        return current_backlog
+
+    monkeypatch.setattr("northgate.app.settlement_backlog", backlog_stub)
     app = create_app(
         Settings(
             environment="test",
@@ -131,16 +138,31 @@ async def test_outbox_readiness_requires_an_active_settlement_worker() -> None:
         redis=redis,
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        unavailable = await client.get("/health/ready")
+        empty = await client.get("/health/ready")
+        current_backlog = SettlementBacklog(pending_events=1, oldest_age_seconds=299)
+        fresh = await client.get("/health/ready")
+        current_backlog = SettlementBacklog(pending_events=1, oldest_age_seconds=301)
+        overdue = await client.get("/health/ready")
         redis.worker_available = True
         available = await client.get("/health/ready")
 
-    assert unavailable.status_code == 503
-    assert unavailable.json() == {
-        "status": "not_ready",
+    assert empty.status_code == 200
+    assert empty.json() == {
+        "status": "ready",
+        "degraded": True,
         "reason": "settlement_worker_unavailable",
+        "settlement_backlog": {"pending_events": 0, "oldest_age_seconds": 0},
+    }
+    assert fresh.status_code == 200
+    assert fresh.json()["degraded"] is True
+    assert overdue.status_code == 503
+    assert overdue.json() == {
+        "status": "not_ready",
+        "reason": "settlement_backlog_overdue",
+        "settlement_backlog": {"pending_events": 1, "oldest_age_seconds": 301},
     }
     assert available.status_code == 200
+    assert available.json() == {"status": "ready"}
 
 
 @pytest.mark.anyio

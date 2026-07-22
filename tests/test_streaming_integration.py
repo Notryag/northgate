@@ -21,6 +21,14 @@ from northgate.db.models import ProviderAttemptRecord, RequestRecord, Settlement
 from northgate.metrics import Metrics
 from northgate.reconcile import reconcile
 
+pytestmark = pytest.mark.integration
+
+
+def _integration_store_unavailable(reason: str) -> None:
+    if os.environ.get("NORTHGATE_REQUIRE_INTEGRATION_STORES") == "1":
+        pytest.fail(reason)
+    pytest.skip(reason)
+
 
 class TerminalThenHangStream(httpx.AsyncByteStream):
     def __init__(self) -> None:
@@ -54,14 +62,16 @@ async def test_real_storage_sequential_streams_release_policy_leases() -> None:
     redis = Redis.from_url(redis_url)
     try:
         if not await database.ping():
-            pytest.skip("PostgreSQL is not available")
+            _integration_store_unavailable("PostgreSQL is not available")
         await redis.ping()
         async with database.sessions() as session:
             await session.execute(text("SELECT 1 FROM request_records LIMIT 1"))
     except (RedisError, SQLAlchemyError, OSError):
         await database.close()
         await redis.aclose()
-        pytest.skip("Northgate integration stores are not available or are not migrated")
+        _integration_store_unavailable(
+            "Northgate integration stores are not available or are not migrated"
+        )
 
     application_key = f"ng_integration_{uuid4().hex}"
     gateway_slug = f"integration-{uuid4().hex[:12]}"
@@ -189,14 +199,16 @@ async def test_reconciliation_previews_then_recovers_stale_records_and_lease() -
     record_created = False
     try:
         if not await database.ping():
-            pytest.skip("PostgreSQL is not available")
+            _integration_store_unavailable("PostgreSQL is not available")
         await redis.ping()
         async with database.sessions() as session:
             await session.execute(text("SELECT 1 FROM request_records LIMIT 1"))
     except (RedisError, SQLAlchemyError, OSError):
         await database.close()
         await redis.aclose()
-        pytest.skip("Northgate integration stores are not available or are not migrated")
+        _integration_store_unavailable(
+            "Northgate integration stores are not available or are not migrated"
+        )
 
     try:
         async with database.sessions() as session:
