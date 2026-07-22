@@ -28,6 +28,8 @@ def _settings(**overrides: object) -> Settings:
         "application_key_sha256": SecretStr(sha256(APPLICATION_KEY.encode()).hexdigest()),
         "provider_base_url": "https://provider.test/v1",
         "provider_api_key": SecretStr(PROVIDER_KEY),
+        "routing_source": "configuration",
+        "usage_persistence_enabled": False,
     }
     values.update(overrides)
     return Settings(**values)
@@ -587,6 +589,9 @@ class DisconnectStream(httpx.AsyncByteStream):
 
 
 class TerminalThenHangStream(httpx.AsyncByteStream):
+    def __init__(self) -> None:
+        self.closed = asyncio.Event()
+
     async def __aiter__(self):
         yield (
             b'data: {"usage":{"prompt_tokens":9,"completion_tokens":1,'
@@ -595,6 +600,9 @@ class TerminalThenHangStream(httpx.AsyncByteStream):
         )
         yield b"data: [DONE]\r\n\r\n"
         await asyncio.Event().wait()
+
+    async def aclose(self) -> None:
+        self.closed.set()
 
 
 @pytest.mark.anyio
@@ -657,6 +665,32 @@ async def test_streaming_sends_first_chunk_before_upstream_finishes() -> None:
         message.get("body", b"") for message in messages if message["type"] == "http.response.body"
     )
     assert body == b"data: first\n\ndata: [DONE]\n\n"
+
+
+@pytest.mark.anyio
+async def test_terminal_event_closes_upstream_that_never_sends_eof() -> None:
+    stream = TerminalThenHangStream()
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        await request.aread()
+        return httpx.Response(
+            200,
+            stream=stream,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    upstream_client = AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(_settings(), upstream_client=upstream_client)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await asyncio.wait_for(
+            client.post(PROXY_PATH, json={"stream": True}, headers=_authorization()),
+            timeout=1,
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.content.endswith(b"data: [DONE]\r\n\r\n")
+    assert stream.closed.is_set()
 
 
 @pytest.mark.anyio

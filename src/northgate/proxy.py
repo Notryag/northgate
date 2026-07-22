@@ -392,6 +392,8 @@ async def _response_body(
                 else:
                     cache_body = None
             yield chunk
+            if accumulator.terminal_event_seen:
+                break
         completed = True
     except asyncio.CancelledError:
         if accumulator.terminal_event_seen:
