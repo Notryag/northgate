@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
+application_probe_container="${NORTHGATE_APPLICATION_PROBE_CONTAINER:?Set NORTHGATE_APPLICATION_PROBE_CONTAINER before upgrading}"
 
 cd -- "${repo_root}"
 compose=(docker compose -f docker-compose.yml -f docker-compose.platform.yml)
@@ -30,8 +31,7 @@ if ! "${compose[@]}" up -d --wait "${upgrade_services[@]}"; then
     echo "Pre-upgrade backup: ${backup_path}" >&2
     exit 1
 fi
-if [[ -n "${NORTHGATE_APPLICATION_PROBE_CONTAINER:-}" ]]; then
+NORTHGATE_APPLICATION_PROBE_CONTAINER="${application_probe_container}" \
     "${script_dir}/probe-application-connectivity.sh"
-fi
 
 echo "Upgrade complete. Pre-upgrade backup: ${backup_path}"

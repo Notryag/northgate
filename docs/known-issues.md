@@ -187,6 +187,10 @@ Implemented on 2026-07-22:
   receiving two upstream `502` responses. It verifies that request and attempt
   records leave `started` and the Redis lease is released before the second
   request, both for inline settlement and when the first outbox process fails.
+- The supported Compose upgrade command now requires
+  `NORTHGATE_APPLICATION_PROBE_CONTAINER` before any build, backup, migration, or
+  replacement and unconditionally runs the application-side readiness probe
+  after Northgate becomes ready.
 
 Still required:
 
@@ -196,8 +200,6 @@ Still required:
   lacks the worker; connect heartbeat alerts to the deployment controller.
 - Connect the provided alert rules to the production Alertmanager and add a
   cancelled-database-connection signal when the database pool exposes one.
-- Make the application-container probe mandatory in each production deployment
-  profile rather than optional in the generic Compose upgrade command.
 
 ### Closure criteria
 

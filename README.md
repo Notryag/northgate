@@ -334,7 +334,7 @@ Compose 环境提供可执行运维入口：
 ```sh
 ./scripts/compose-backup.sh
 NORTHGATE_RESTORE_CONFIRM=northgate ./scripts/compose-restore.sh <backup.dump>
-./scripts/compose-upgrade.sh
+NORTHGATE_APPLICATION_PROBE_CONTAINER=dayboard-api ./scripts/compose-upgrade.sh
 ```
 
 恢复会删除并重建目标数据库，校验数据库名和 SHA-256 后才执行，并在完成后保持 Northgate 停止。升级使用维护窗口，先创建验证过的备份，再停止应用、运行单一 Alembic head 并等待 readiness。生产回滚依赖恢复升级前备份和匹配的旧版本，不使用 Alembic downgrade。

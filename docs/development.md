@@ -59,7 +59,7 @@ Run the same deterministic local acceptance with:
 - Verified an outbox enqueue failure falls back to inline request/attempt
   settlement and increments the bounded `outbox_enqueue` failure metric.
 - Ran the real PostgreSQL/Redis tests with `PYTHONWARNINGS=error`; all three passed
-  without leaked SQLAlchemy connections. The complete backend suite passed 61
+  without leaked SQLAlchemy connections. The complete backend suite passed 63
   tests, both Compose configurations validated, and Alembic reported `0013` as
   the single head.
 - Ran `northgate-worker --once` against the migrated local PostgreSQL and Redis;
@@ -75,6 +75,14 @@ Run the same deterministic local acceptance with:
 - Added worker-aware Compose upgrade validation: when outbox is enabled, the
   supported upgrade builds, stops, and starts Northgate and the settlement worker
   together and rejects a merged configuration without the worker service.
+- Fixed the exhausted-retry regression: a final retryable provider `5xx` is
+  drained and settled before Northgate returns `PROVIDER_UNAVAILABLE`. The
+  concurrency-limit-one regression sends two requests through two `502` attempts
+  each and proves the second request is admitted immediately in inline and
+  first-process-failure outbox modes. Provider-native final `429` remains intact.
+- Made the application-container readiness probe mandatory in the supported
+  Compose upgrade command. A missing probe container now stops the command before
+  build, backup, migration, or service replacement.
 - Began the request-pipeline decomposition by extracting bounded request input,
   metadata/model parsing, token estimation, and allowed forwarded headers into
   immutable `ProxyRequestInput`; the existing proxy behavior suite remained green.

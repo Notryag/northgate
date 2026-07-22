@@ -1,7 +1,7 @@
 # Upgrade and rollback
 
 Status: implemented for the Compose deployment  
-Last reviewed: 2026-07-17
+Last reviewed: 2026-07-22
 
 ## Upgrade policy
 
@@ -15,19 +15,22 @@ platform network exists:
 
 ```sh
 git checkout <target release>
-./scripts/compose-upgrade.sh
+NORTHGATE_APPLICATION_PROBE_CONTAINER=dayboard-api ./scripts/compose-upgrade.sh
 ```
 
 If the default host port is already occupied, override the Compose bind without
 changing Northgate's container port:
 
 ```sh
-NORTHGATE_HTTP_BIND=127.0.0.1:18080 ./scripts/compose-upgrade.sh
+NORTHGATE_APPLICATION_PROBE_CONTAINER=dayboard-api \
+NORTHGATE_HTTP_BIND=127.0.0.1:18080 \
+./scripts/compose-upgrade.sh
 ```
 
 To select the backup destination:
 
 ```sh
+NORTHGATE_APPLICATION_PROBE_CONTAINER=dayboard-api \
 ./scripts/compose-upgrade.sh /secure/backups/northgate-pre-release.dump
 ```
 
@@ -39,14 +42,15 @@ If migration or readiness fails, the script leaves Northgate stopped and prints
 the pre-upgrade backup path. Do not repeatedly rerun a failed migration without
 understanding its state.
 
-For a deployment serving another Python application container, make connectivity
-from that container part of upgrade acceptance:
+The application-container probe is mandatory. Set the container that exercises
+Northgate from the real application network before every upgrade:
 
 ```sh
 NORTHGATE_APPLICATION_PROBE_CONTAINER=dayboard-api ./scripts/compose-upgrade.sh
 ```
 
-After Northgate readiness succeeds, the upgrade runs
+The script rejects a missing container setting before build, backup, migration,
+or replacement. After Northgate readiness succeeds, it runs
 `scripts/probe-application-connectivity.sh` inside that application container and
 requires `http://northgate:8080/health/ready` to return the expected JSON. Override
 the URL with `NORTHGATE_APPLICATION_PROBE_URL` when the Compose service name or
