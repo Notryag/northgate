@@ -124,6 +124,11 @@ Exit criteria:
 
 Status: in progress
 
+The streaming lifecycle and deployment-topology incident remains open for
+hardening even though its immediate production failures are mitigated. See
+[Known issues and hardening work](known-issues.md) for the required integration,
+reconciliation, observability, and soak-test exit criteria.
+
 Implemented so far:
 
 - Operator-authenticated control APIs for organizations, projects, gateways,

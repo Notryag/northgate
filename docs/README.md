@@ -20,6 +20,7 @@ the pages needed for the current task.
 | Back up, restore, or upgrade | [Backup and restore](operations/backup-and-restore.md), [Upgrades](operations/upgrades.md) |
 | Integrate Dayboard | [Integration boundaries](integration-boundaries.md), [API design](api-design.md) |
 | Integrate an existing system | [Integration guide](integration-guide.md), [API design](api-design.md) |
+| Investigate an open reliability gap | [Known issues and hardening work](known-issues.md) |
 | Review durable technical decisions | [Architecture decisions](decisions/) |
 
 ## Canonical pages
@@ -29,6 +30,7 @@ the pages needed for the current task.
 - [API design](api-design.md): proposed data-plane and control-plane contracts.
 - [Integration boundaries](integration-boundaries.md): ownership split with Dayboard and `north`.
 - [Integration guide](integration-guide.md): compatibility checks, canary traffic, and rollback.
+- [Known issues and hardening work](known-issues.md): active reliability gaps and closure criteria.
 - [Roadmap](roadmap.md): ordered milestones and completion criteria.
 - [Development workflow](development.md): local verification cadence and completion gates.
 - [Operations](operations/): configuration, migrations, backup, restore, and upgrade procedures.
