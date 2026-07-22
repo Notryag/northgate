@@ -64,6 +64,15 @@ groups:
           summary: Northgate operational metrics collection failed
           description: Metrics refresh failed for {{ $labels.store }}.
 
+      - alert: NorthgateDatabaseConnectionCancelled
+        expr: increase(northgate_database_connection_invalidations_total{reason="cancelled"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Northgate database connection was cancelled
+          description: SQLAlchemy invalidated {{ $value }} database connections after cancellation in five minutes.
+
       - alert: NorthgateConcurrencyRejections
         expr: increase(northgate_gateway_errors_total{code="CONCURRENCY_LIMIT_EXCEEDED"}[5m]) > 0
         for: 2m

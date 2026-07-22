@@ -194,12 +194,15 @@ Implemented on 2026-07-22:
 - The settlement worker now has a heartbeat-backed container healthcheck, and the
   outbox-aware topology preflight rejects worker services without one. Compose
   upgrade `--wait` therefore includes worker availability.
+- SQLAlchemy pool invalidations now increment
+  `northgate_database_connection_invalidations_total{reason}`. Explicit
+  `asyncio.CancelledError` invalidations use the bounded `cancelled` reason and
+  have a deployable Prometheus alert.
 
 Still required:
 
 - Connect worker heartbeat alerts to the production deployment controller.
-- Connect the provided alert rules to the production Alertmanager and add a
-  cancelled-database-connection signal when the database pool exposes one.
+- Connect the provided alert rules to the production Alertmanager.
 
 ### Closure criteria
 

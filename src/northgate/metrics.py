@@ -1,3 +1,4 @@
+import asyncio
 import time
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -160,6 +161,22 @@ class Metrics:
             ("store",),
             registry=self.registry,
         )
+        self.database_connection_invalidations = Counter(
+            "northgate_database_connection_invalidations_total",
+            "SQLAlchemy pool connection invalidations by explicit reason.",
+            ("reason",),
+            registry=self.registry,
+        )
+
+    def observe_database_connection_invalidation(self, exception: BaseException | None) -> None:
+        reason = (
+            "cancelled"
+            if isinstance(exception, asyncio.CancelledError)
+            else "error"
+            if exception is not None
+            else "unspecified"
+        )
+        self.database_connection_invalidations.labels(reason=reason).inc()
 
     async def refresh_operational_state(
         self,

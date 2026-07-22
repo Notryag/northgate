@@ -59,7 +59,7 @@ Run the same deterministic local acceptance with:
 - Verified an outbox enqueue failure falls back to inline request/attempt
   settlement and increments the bounded `outbox_enqueue` failure metric.
 - Ran the real PostgreSQL/Redis tests with `PYTHONWARNINGS=error`; all three passed
-  without leaked SQLAlchemy connections. The complete backend suite passed 63
+  without leaked SQLAlchemy connections. The complete backend suite passed 64
   tests, both Compose configurations validated, and Alembic reported `0013` as
   the single head.
 - Ran `northgate-worker --once` against the migrated local PostgreSQL and Redis;
@@ -86,6 +86,9 @@ Run the same deterministic local acceptance with:
 - Added `northgate-worker --healthcheck` and attached it to the Compose worker
   service. It checks the Redis heartbeat used by data-plane readiness, while the
   topology preflight now rejects an outbox worker without a healthcheck.
+- Instrumented SQLAlchemy pool invalidation events with bounded cancellation,
+  error, and unspecified reasons, and added an alert for explicit cancelled
+  database connections.
 - Began the request-pipeline decomposition by extracting bounded request input,
   metadata/model parsing, token estimation, and allowed forwarded headers into
   immutable `ProxyRequestInput`; the existing proxy behavior suite remained green.

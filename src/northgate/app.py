@@ -57,6 +57,8 @@ def create_app(
     if database_required and active_database is None:
         active_database = Database(settings.database_url.get_secret_value())
         owns_database = True
+    if metrics is not None and isinstance(active_database, Database):
+        active_database.add_invalidation_listener(metrics.observe_database_connection_invalidation)
     configured_policy = any(
         limit is not None
         for limit in (
