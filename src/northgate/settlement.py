@@ -340,14 +340,33 @@ async def _run_cli(*, once: bool, poll_seconds: float) -> None:
         await redis.aclose()
 
 
+async def _run_healthcheck() -> None:
+    settings = get_settings()
+    redis = Redis.from_url(settings.redis_url.get_secret_value())
+    try:
+        if not await settlement_worker_available(redis):
+            raise SystemExit("no live settlement worker heartbeat")
+    finally:
+        await redis.aclose()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Process durable Northgate settlement events.")
-    parser.add_argument("--once", action="store_true", help="Drain available events and exit.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--once", action="store_true", help="Drain available events and exit.")
+    mode.add_argument(
+        "--healthcheck",
+        action="store_true",
+        help="Exit successfully when a live worker heartbeat is visible.",
+    )
     parser.add_argument("--poll-seconds", type=float, default=0.25)
     args = parser.parse_args()
     if not 0.05 <= args.poll_seconds <= 60:
         raise SystemExit("--poll-seconds must be between 0.05 and 60")
-    asyncio.run(_run_cli(once=args.once, poll_seconds=args.poll_seconds))
+    if args.healthcheck:
+        asyncio.run(_run_healthcheck())
+    else:
+        asyncio.run(_run_cli(once=args.once, poll_seconds=args.poll_seconds))
 
 
 if __name__ == "__main__":

@@ -83,6 +83,9 @@ Run the same deterministic local acceptance with:
 - Made the application-container readiness probe mandatory in the supported
   Compose upgrade command. A missing probe container now stops the command before
   build, backup, migration, or service replacement.
+- Added `northgate-worker --healthcheck` and attached it to the Compose worker
+  service. It checks the Redis heartbeat used by data-plane readiness, while the
+  topology preflight now rejects an outbox worker without a healthcheck.
 - Began the request-pipeline decomposition by extracting bounded request input,
   metadata/model parsing, token estimation, and allowed forwarded headers into
   immutable `ProxyRequestInput`; the existing proxy behavior suite remained green.

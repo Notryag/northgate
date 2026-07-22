@@ -65,7 +65,9 @@ same release as the application. Northgate readiness remains `503` until a worke
 heartbeat is visible, so a data-plane-only rollout cannot pass health checks.
 Set `NORTHGATE_SETTLEMENT_OUTBOX_ENABLED=true` before running the upgrade script;
 its topology preflight then requires the worker service and the upgrade starts,
-stops, and builds both services as one unit.
+stops, and builds both services as one unit. The worker container healthcheck
+requires a live Redis heartbeat, so Compose `--wait` verifies worker availability
+rather than only checking that its process is running.
 
 ## Rollback
 

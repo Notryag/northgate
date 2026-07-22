@@ -191,13 +191,13 @@ Implemented on 2026-07-22:
   `NORTHGATE_APPLICATION_PROBE_CONTAINER` before any build, backup, migration, or
   replacement and unconditionally runs the application-side readiness probe
   after Northgate becomes ready.
+- The settlement worker now has a heartbeat-backed container healthcheck, and the
+  outbox-aware topology preflight rejects worker services without one. Compose
+  upgrade `--wait` therefore includes worker availability.
 
 Still required:
 
-- Require and monitor the healthy settlement-worker profile in every production
-  deployment that enables the outbox. Generic Compose exposes the profile, but
-  `validate-compose-topology.sh` now rejects an outbox-enabled merged config that
-  lacks the worker; connect heartbeat alerts to the deployment controller.
+- Connect worker heartbeat alerts to the production deployment controller.
 - Connect the provided alert rules to the production Alertmanager and add a
   cancelled-database-connection signal when the database pool exposes one.
 

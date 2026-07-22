@@ -44,6 +44,11 @@ if not isinstance(worker, dict):
     raise SystemExit(
         "NORTHGATE_SETTLEMENT_OUTBOX_ENABLED requires the settlement-worker Compose service"
     )
+healthcheck = worker.get("healthcheck")
+if not isinstance(healthcheck, dict) or not healthcheck.get("test"):
+    raise SystemExit(
+        "NORTHGATE_SETTLEMENT_OUTBOX_ENABLED requires a settlement-worker healthcheck"
+    )
 ' <<<"${config_json}"
 fi
 
