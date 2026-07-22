@@ -23,7 +23,8 @@ settings; README sections describe behavior and safe defaults.
 - `northgate-inspect` client settings use the separate `NORTHGATE_INSPECT_*`
   namespace. Supply its raw operator credential through the environment or a
   regular `NORTHGATE_INSPECT_OPERATOR_KEY_FILE` with no group/other access; never
-  pass it as a command argument.
+  pass it as a command argument. `northgate-mcp` consumes the same client
+  settings and never accepts credentials as MCP tool arguments.
 - Release notes must call out new required settings, default changes, and any
   setting that changes request or cost behavior.
 - `NORTHGATE_MAX_REQUEST_BODY_BYTES` bounds buffered proxy request bodies and

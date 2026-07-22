@@ -35,6 +35,7 @@ authentication, retry, usage, or error behavior.
 | `northgate-bootstrap` | Idempotently create the initial database-backed gateway configuration |
 | `northgate-verify` | Check non-streaming, SSE, and tool-call compatibility without logging content |
 | `northgate-inspect` | Inspect correlated runs, requests, and stale settlement state through the Operator API |
+| `northgate-mcp` | Expose the same bounded read-only diagnostics as MCP tools over stdio |
 
 The data plane and control plane still run in one FastAPI process. The settlement
 worker is independently deployable. Separate data/control binaries and versioned
@@ -48,7 +49,9 @@ correlated-run, individual-request, and stale-settlement contracts with JSON or
 human output. Stale diagnostics distinguish records protected by a recoverable
 settlement event, unprotected records, request-only/attempt-only inconsistencies,
 and active or expired Redis concurrency leases. The read-only operator MCP server
-is not implemented.
+exposes five tools over stdio and calls the same Operator REST endpoints. It does
+not query PostgreSQL or Redis directly and does not expose an unauthenticated HTTP
+transport.
 
 ## Request path
 
@@ -173,7 +176,7 @@ CI has separate jobs:
   `integration` with store failures configured to fail rather than skip.
 
 At this review, migration `0016` is the single Alembic head. The local suite has
-87 non-integration and 9 real-store integration tests. Counts are a snapshot, not
+90 non-integration and 9 real-store integration tests. Counts are a snapshot, not
 a contract; new behavior should add proportional coverage.
 
 ## Open work
@@ -189,9 +192,8 @@ The next architectural work is intentionally narrower than provider expansion:
 5. add application and trusted-tenant policy subjects before a generic hierarchy;
 6. connect production heartbeat/backlog alerts and complete production-like soak
    closure criteria;
-7. deploy and verify the direct-cancellation settlement fix, then expose the
-   diagnostics contract through an independently deployable read-only MCP
-   adapter.
+7. deploy and verify the direct-cancellation settlement fix, then add the
+   correlated diagnostics view to the console.
 
 See `known-issues.md` for active reliability closure criteria and `roadmap.md` for
 milestone ordering.

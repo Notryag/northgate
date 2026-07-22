@@ -54,7 +54,7 @@ older revision.
 - [API design](api-design.md): proposed data-plane and control-plane contracts.
 - [Integration boundaries](integration-boundaries.md): ownership split with Dayboard and `north`.
 - [Integration guide](integration-guide.md): compatibility checks, canary traffic, and rollback.
-- [Operator diagnostics interface](diagnostics-interface.md): implemented shared service and REST contract plus the proposed CLI and read-only MCP adapters.
+- [Operator diagnostics interface](diagnostics-interface.md): implemented shared service, REST, CLI, and read-only MCP diagnostics contract.
 - [Known issues and hardening work](known-issues.md): active gaps first, then incident history and closure criteria.
 - [Architecture review](architecture-review.md): accepted assessment and ordered refactoring work.
 - [Roadmap](roadmap.md): ordered milestones and completion criteria.

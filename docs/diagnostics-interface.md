@@ -1,6 +1,6 @@
 # Operator diagnostics interface
 
-Status: shared service, Operator REST, and CLI implemented; MCP and console open
+Status: shared service, Operator REST, CLI, and read-only MCP implemented; console open
 Last reviewed: 2026-07-22
 
 This document defines a read-only diagnostics surface for operators and coding
@@ -43,14 +43,14 @@ The diagnostics REST schema is version `1`. It never returns request metadata
 values inside an individual request, settlement payloads, prompts, responses, or
 tool data. The correlation endpoint echoes only its operator-supplied filter.
 
-The React console does not yet expose correlated request diagnostics. There is
-also no supported MCP server for this workflow. Direct PostgreSQL queries are an
-emergency investigation technique, not a product interface.
+The React console does not yet expose correlated request diagnostics. Direct
+PostgreSQL queries are an emergency investigation technique, not a product
+interface.
 
-## Proposed architecture
+## Implemented architecture
 
-Implement diagnostics once as an application service over Northgate's durable
-records, then expose thin adapters:
+Diagnostics is implemented once as an application service over Northgate's
+durable records and exposed through thin adapters:
 
 ```text
 Northgate diagnostics service
@@ -62,13 +62,18 @@ Northgate diagnostics service
 REST remains the stable service boundary. CLI and MCP must call the same service
 or shared typed client and must not duplicate settlement classification rules.
 
+`northgate-mcp` implements this boundary as an independently launched stdio
+server. It uses the stable MCP Python SDK v1 line (`mcp>=1.27,<2`); SDK v2 is
+pre-release and intentionally not used. Streamable HTTP remains disabled until
+the adapter has an explicit token verifier or OAuth deployment contract.
+
 The MCP server is an operator integration. It is distinct from accepting MCP as
 a model-provider data-plane protocol and does not change the product boundary in
 `current-state.md`.
 
 ## MCP tools
 
-The initial MCP server should expose only bounded, read-only tools:
+The MCP server exposes only bounded, read-only tools:
 
 | Tool | Input | Result |
 | --- | --- | --- |
@@ -183,8 +188,8 @@ assuming every ledger record is complete.
    stable finding codes.
 3. Completed on 2026-07-22: add Operator REST responses for individual requests
    and bounded correlated request sets.
-4. Add the independently deployable read-only MCP adapter over the same API as
-   the primary coding-agent interface.
+4. Completed on 2026-07-22: add the independently launched read-only MCP stdio
+   adapter over the same Operator API as the primary coding-agent interface.
 5. Completed on 2026-07-22: `northgate-inspect run`, `request`, and `stale` are a
    thin REST client with JSON and human output for operators, CI, and recovery
    environments.

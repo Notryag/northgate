@@ -298,6 +298,17 @@ uv run northgate-inspect stale --minimum-age 5m
 退出码 `0` 表示无 finding，`2` 表示存在 finding，`3` 表示鉴权失败，`4`
 表示配置、网络或 Operator API 失败。
 
+同一诊断契约也可以通过只读 MCP stdio server 使用：
+
+```sh
+export NORTHGATE_INSPECT_BASE_URL=http://127.0.0.1:8080
+export NORTHGATE_INSPECT_OPERATOR_KEY_FILE=/run/secrets/northgate_operator_key
+uv run northgate-mcp
+```
+
+MCP 工具不接受或返回凭证。首版只启用 stdio transport；在配置 OAuth/token
+verification 之前不会开放 Streamable HTTP。
+
 React 运维控制台地址：
 
 ```text
