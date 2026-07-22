@@ -157,9 +157,10 @@ Implemented so far:
 - Route-planning extraction: application-key route resolution, metadata-based
   candidate selection, and primary adapter validation now live in
   `route_planning.py`.
-- Provider-attempt transport extraction: adapter request construction, streaming
-  send, and timeout/connect/ambiguous transport classification now live in
-  `attempt_execution.py` with focused outcome tests.
+- Provider-attempt execution extraction: adapter request construction, streaming
+  send, timeout/connect/ambiguous transport classification, and retryable-response
+  consumption now live in `attempt_execution.py`. Focused contracts preserve final
+  provider `429` passthrough and exhaust final retryable `5xx` responses.
 - Bounded settlement failure metrics for request, attempt, and policy stages.
 - Full stream-finalization cancellation shielding with independently suspended
   close, cache, route-health, attempt, request, and policy boundaries.

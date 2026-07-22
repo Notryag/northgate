@@ -12,7 +12,7 @@ from anyio import CancelScope
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from northgate.attempt_execution import execute_provider_attempt
+from northgate.attempt_execution import execute_provider_attempt, resolve_retryable_response
 from northgate.config import Settings
 from northgate.exact_cache import (
     CacheEntry,
@@ -436,30 +436,6 @@ async def _settle_attempt_with_outbox(
         usage=usage,
         cost_microusd=cost_microusd,
     )
-
-
-async def _consume_retryable_response(
-    response: httpx.Response,
-    *,
-    started_at: float,
-    price: PriceQuote | None,
-) -> tuple[UsageResult, int | None]:
-    accumulator = UsageAccumulator(response.headers.get("content-type", ""), started_at)
-    try:
-        if response.is_stream_consumed:
-            accumulator.observe(response.content)
-        else:
-            async for chunk in response.aiter_raw():
-                accumulator.observe(chunk)
-    finally:
-        await response.aclose()
-    usage = accumulator.result()
-    cost_microusd = (
-        price.usage_cost(usage.prompt_tokens, usage.completion_tokens)
-        if price is not None
-        else None
-    )
-    return usage, cost_microusd
 
 
 def _route_health_key(route: ResolvedRoute) -> str:
@@ -1491,20 +1467,17 @@ async def proxy_chat_completions(
             response = transport_result.response
             if response is None:
                 raise RuntimeError("provider attempt completed without a response or failure")
-            retryable_status = response.status_code in candidate.retry_status_codes
-            exhausted_retryable_server_error = (
-                retryable_status and not has_next and response.status_code >= 500
+            response_result = await resolve_retryable_response(
+                response,
+                candidate,
+                has_next=has_next,
+                started_at=attempt_started_at,
+                price=candidate_price,
             )
-            if retryable_status and (has_next or exhausted_retryable_server_error):
-                if exhausted_retryable_server_error:
+            if response_result.response is None:
+                if response_result.exhausted:
                     last_failure = "provider_unavailable"
-                try:
-                    retry_usage, retry_cost = await _consume_retryable_response(
-                        response,
-                        started_at=attempt_started_at,
-                        price=candidate_price,
-                    )
-                except httpx.TransportError:
+                if response_result.outcome == "transport_ambiguous":
                     totals.ambiguous = True
                     await _settle_attempt_with_outbox(
                         request.app.state.settlement_coordinator,
@@ -1513,12 +1486,12 @@ async def proxy_chat_completions(
                         route=candidate,
                         request_id=request_id,
                         attempt_id=attempt_id,
-                        outcome="transport_ambiguous",
-                        status_code=response.status_code,
-                        provider_request_id=response.headers.get("x-request-id"),
+                        outcome=response_result.outcome,
+                        status_code=response_result.status_code,
+                        provider_request_id=response_result.provider_request_id,
                         started_at=attempt_started_at,
-                        usage=UsageResult(),
-                        cost_microusd=None,
+                        usage=response_result.usage,
+                        cost_microusd=response_result.cost_microusd,
                     )
                     try:
                         await _record_route_health(
@@ -1532,8 +1505,8 @@ async def proxy_chat_completions(
                         await logger.aexception(
                             "route_health_settlement_failed", route=health_route_key
                         )
-                else:
-                    totals.add(retry_usage, retry_cost)
+                elif response_result.outcome == "retryable_status":
+                    totals.add(response_result.usage, response_result.cost_microusd)
                     await _settle_attempt_with_outbox(
                         request.app.state.settlement_coordinator,
                         recorder,
@@ -1541,12 +1514,12 @@ async def proxy_chat_completions(
                         route=candidate,
                         request_id=request_id,
                         attempt_id=attempt_id,
-                        outcome="retryable_status",
-                        status_code=response.status_code,
-                        provider_request_id=response.headers.get("x-request-id"),
+                        outcome=response_result.outcome,
+                        status_code=response_result.status_code,
+                        provider_request_id=response_result.provider_request_id,
                         started_at=attempt_started_at,
-                        usage=retry_usage,
-                        cost_microusd=retry_cost,
+                        usage=response_result.usage,
+                        cost_microusd=response_result.cost_microusd,
                     )
                     try:
                         await _record_route_health(
@@ -1554,13 +1527,18 @@ async def proxy_chat_completions(
                             candidate,
                             route_key=health_route_key,
                             token=health_token,
-                            failed=(response.status_code in candidate.health_failure_status_codes),
+                            failed=(
+                                response_result.status_code in candidate.health_failure_status_codes
+                            ),
                         )
                     except RouteHealthUnavailableError:
                         await logger.aexception(
                             "route_health_settlement_failed", route=health_route_key
                         )
+                else:
+                    raise RuntimeError("consumed provider response has no terminal outcome")
             else:
+                response = response_result.response
                 return StreamingResponse(
                     _response_body(
                         response,
