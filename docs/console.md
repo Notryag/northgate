@@ -1,6 +1,6 @@
 # Operator console
 
-Status: phase 2 implemented
+Status: phase 3 implemented
 Last reviewed: 2026-07-23
 
 The Northgate console is an operator workspace for configuration, usage, and
@@ -25,8 +25,9 @@ The accepted navigation is:
 Phase 1 implements the shared shell, Overview, Requests, Usage, and Pricing.
 Phase 2 implements Gateway selection and creation, Route creation and bounded
 traffic-field updates, trusted metadata match configuration, and Gateway Policy
-replacement. Applications, Provider credential writes, and Operations remain in
-the ordered backlog.
+replacement. Phase 3 implements organization/project/application-key management,
+one-time application-key display, revocation, encrypted provider credential
+creation and rotation, route references, and a read-only Operations workspace.
 
 Gateway route create/edit forms also configure the nullable default output token
 reservation. Request detail displays the prompt estimate, output reserve, attempt
@@ -81,5 +82,10 @@ future security work, not implied by the frontend framework.
 2. Recent-request list, correlation search, and request diagnostic detail.
 3. Existing overview, usage, tenant, route, and pricing workflows migrated from the single page.
 4. Completed on 2026-07-22: Gateway, route, and policy management.
-5. Organization, project, application-key, and provider-credential management.
-6. Operations workspace and Web browser regression coverage.
+5. Completed on 2026-07-23: organization, project, application-key, and
+   provider-credential management.
+6. Completed on 2026-07-23: read-only Operations workspace for readiness,
+   settlement backlog, stale request/attempt records, outbox recovery state, and
+   concurrency leases. Mutating reconciliation remains CLI-only.
+7. Web browser regression automation remains future work; TypeScript and
+   production builds are the current frontend release gate.

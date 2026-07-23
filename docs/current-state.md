@@ -61,13 +61,16 @@ not query PostgreSQL or Redis directly and does not expose an unauthenticated HT
 transport.
 
 The React operator console now uses a routed management shell with Overview,
-Requests, Gateways, Usage, and Pricing workspaces. Requests defaults to a bounded
-newest-first list, supports metadata correlation, and opens a stable detail URL
-with findings, provider attempts, and redacted settlement progress. Gateways
-supports project-scoped creation, route creation, trusted metadata conditions,
-explicit priority/weight/enable updates, and complete Gateway Policy replacement.
-Nested `/console/*` paths fall back to the SPA index. Application, provider-write,
-and operations workspaces remain planned in [Operator console](console.md).
+Requests, Gateways, Applications, Providers, Usage, Operations, and Pricing
+workspaces. Requests defaults to a bounded newest-first list, supports metadata
+correlation, and opens a stable detail URL with findings, provider attempts, and
+redacted settlement progress. Gateways supports route and policy management.
+Applications manages organizations, projects, one-time application keys, trusted
+metadata, and revocation. Providers manages encrypted credential creation,
+rotation, adapters, and route references. Operations joins readiness, settlement
+backlog, stale ledgers, recoverable events, and concurrency leases without adding
+a browser mutation for reconciliation. Nested `/console/*` paths fall back to the
+SPA index. See [Operator console](console.md).
 
 ## Request path
 
@@ -215,7 +218,8 @@ The next architectural work is intentionally narrower than provider expansion:
 5. add application and trusted-tenant policy subjects before a generic hierarchy;
 6. connect production heartbeat/backlog alerts and complete production-like soak
    closure criteria;
-7. finish the remaining Application, Provider, and Operations console workspaces.
+7. add authenticated server-side Console sessions, scoped operator capabilities,
+   and browser regression automation before exposing recovery mutations.
 
 See `known-issues.md` for active reliability closure criteria and `roadmap.md` for
 milestone ordering.

@@ -2,12 +2,15 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Button, Layout, Menu, Tooltip } from "antd";
 import {
   BarChart3,
+  Building2,
+  Database,
   Gauge,
   KeyRound,
   Menu as MenuIcon,
   ReceiptText,
   SearchCode,
   Network,
+  Activity,
 } from "lucide-react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
@@ -19,6 +22,9 @@ const RequestDetailPage = lazy(() => import("./pages/RequestDetailPage").then((m
 const UsagePage = lazy(() => import("./pages/UsagePage").then((module) => ({ default: module.UsagePage })));
 const PricingPage = lazy(() => import("./pages/PricingPage").then((module) => ({ default: module.PricingPage })));
 const GatewaysPage = lazy(() => import("./pages/GatewaysPage").then((module) => ({ default: module.GatewaysPage })));
+const ApplicationsPage = lazy(() => import("./pages/ApplicationsPage").then((module) => ({ default: module.ApplicationsPage })));
+const ProvidersPage = lazy(() => import("./pages/ProvidersPage").then((module) => ({ default: module.ProvidersPage })));
+const OperationsPage = lazy(() => import("./pages/OperationsPage").then((module) => ({ default: module.OperationsPage })));
 
 const { Header, Sider, Content } = Layout;
 
@@ -26,7 +32,10 @@ const navigation = [
   { key: "/overview", label: "Overview", icon: <Gauge size={17} /> },
   { key: "/requests", label: "Requests", icon: <SearchCode size={17} /> },
   { key: "/gateways", label: "Gateways", icon: <Network size={17} /> },
+  { key: "/applications", label: "Applications", icon: <Building2 size={17} /> },
+  { key: "/providers", label: "Providers", icon: <Database size={17} /> },
   { key: "/usage", label: "Usage", icon: <BarChart3 size={17} /> },
+  { key: "/operations", label: "Operations", icon: <Activity size={17} /> },
   { key: "/pricing", label: "Pricing", icon: <ReceiptText size={17} /> },
 ];
 
@@ -71,7 +80,7 @@ export function App() {
       <Layout>
         <Header className="app-header">
           <Button className="mobile-menu" type="text" icon={<MenuIcon size={19} />} onClick={() => setMobileOpen((value) => !value)} aria-label="Toggle navigation" />
-          <span className="header-context">Operations</span>
+          <span className="header-context">{navigation.find((item) => item.key === selected)?.label ?? "Northgate"}</span>
           <Tooltip title="Change operator key">
             <Button icon={<KeyRound size={15} />} onClick={openAccess}>Access</Button>
           </Tooltip>
@@ -83,7 +92,10 @@ export function App() {
               <Route path="/requests" element={<RequestsPage />} />
               <Route path="/requests/:requestId" element={<RequestDetailPage />} />
               <Route path="/gateways" element={<GatewaysPage />} />
+              <Route path="/applications" element={<ApplicationsPage />} />
+              <Route path="/providers" element={<ProvidersPage />} />
               <Route path="/usage" element={<UsagePage />} />
+              <Route path="/operations" element={<OperationsPage />} />
               <Route path="/pricing" element={<PricingPage />} />
               <Route path="*" element={<Navigate to="/overview" replace />} />
             </Routes>

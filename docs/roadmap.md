@@ -169,6 +169,9 @@ Implemented so far:
 
 - Operator-authenticated control APIs for organizations, projects, gateways,
   application keys, encrypted provider credentials, and routes.
+- React management workspaces for organizations, projects, application-key
+  issuance/revocation, encrypted provider credential creation/rotation, route
+  references, and read-only readiness/stale-settlement operations.
 - One-time application key issuance, key revocation, provider secret rotation,
   and route traffic controls required for gradual cutover and rollback.
 - Route/provider attempt distribution API and React console visibility for

@@ -175,6 +175,27 @@ const projectSchema = z.object({
   name: z.string(),
 });
 
+const organizationSchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+  name: z.string(),
+});
+
+const applicationKeySchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+  project_id: z.string(),
+  name: z.string(),
+  allowed_metadata_keys: z.array(z.string()),
+  fixed_metadata: z.record(z.string(), z.string()),
+  metadata_routing_mode: z.enum(["trusted", "legacy"]),
+  revoked_at: nullableString,
+});
+
+const createdApplicationKeySchema = applicationKeySchema.omit({ revoked_at: true }).extend({
+  key: z.string(),
+});
+
 const gatewaySchema = z.object({
   id: z.string(),
   created_at: z.string(),
@@ -223,6 +244,46 @@ const policySchema = z.object({
   exact_cache_ttl_seconds: nullableNumber,
 });
 
+const concurrencyLeaseSchema = z.object({
+  policy_key: z.string(),
+  started_at: nullableString,
+  expires_at: z.string(),
+  age_seconds: nullableNumber,
+  expired: z.boolean(),
+});
+
+const staleRequestDiagnosticSchema = requestDiagnosticSchema.extend({
+  stale: z.object({
+    request_started: z.boolean(),
+    stale_attempt_indexes: z.array(z.number()),
+    age_seconds: z.number(),
+    recoverable_settlement: z.boolean(),
+    concurrency_leases: z.array(concurrencyLeaseSchema),
+  }),
+});
+
+const staleDiagnosticsSchema = z.object({
+  schema_version: z.number(),
+  cutoff: z.string(),
+  minimum_age_seconds: z.number(),
+  has_more: z.boolean(),
+  policy_state_available: z.boolean(),
+  policy_keys_truncated: z.boolean(),
+  finding_counts: z.record(z.string(), z.number()),
+  requests: z.array(staleRequestDiagnosticSchema),
+  findings: z.array(findingSchema),
+});
+
+const readinessSchema = z.object({
+  status: z.enum(["ready", "not_ready"]),
+  degraded: z.boolean().optional(),
+  reason: z.string().optional(),
+  settlement_backlog: z.object({
+    pending_events: z.number(),
+    oldest_age_seconds: z.number(),
+  }).optional(),
+});
+
 export type UsageSummary = z.infer<typeof usageSummarySchema>;
 export type UsagePoint = z.infer<typeof usagePointSchema>;
 export type UsageSeries = z.infer<typeof usageSeriesSchema>;
@@ -234,11 +295,34 @@ export type RequestsReport = z.infer<typeof requestsReportSchema>;
 export type Attempt = z.infer<typeof attemptSchema>;
 export type Finding = z.infer<typeof findingSchema>;
 export type RequestDiagnostic = z.infer<typeof requestDiagnosticSchema>;
+export type Organization = z.infer<typeof organizationSchema>;
 export type Project = z.infer<typeof projectSchema>;
+export type ApplicationKey = z.infer<typeof applicationKeySchema>;
+export type CreatedApplicationKey = z.infer<typeof createdApplicationKeySchema>;
 export type Gateway = z.infer<typeof gatewaySchema>;
 export type ProviderCredential = z.infer<typeof providerCredentialSchema>;
 export type Route = z.infer<typeof routeSchema>;
 export type GatewayPolicy = z.infer<typeof policySchema>;
+export type StaleDiagnostics = z.infer<typeof staleDiagnosticsSchema>;
+export type Readiness = z.infer<typeof readinessSchema>;
+
+export interface ApplicationKeyCreateInput {
+  project_id: string;
+  name: string;
+  allowed_metadata_keys: string[];
+  fixed_metadata: Record<string, string>;
+  metadata_routing_mode: "trusted" | "legacy";
+}
+
+export interface ProviderCredentialCreateInput {
+  project_id: string;
+  name: string;
+  provider: string;
+  base_url: string;
+  adapter: "openai_compatible" | "azure_openai";
+  adapter_config: Record<string, string>;
+  api_key: string;
+}
 
 export interface ModelPriceCreateInput {
   provider: string;
@@ -294,6 +378,17 @@ async function request<T>(
     throw new ApiError(response.status, payload?.error?.message ?? `Request failed (${response.status})`);
   }
   return schema.parse(await response.json());
+}
+
+async function requestEmpty(path: string, operatorKey: string, init: RequestInit): Promise<void> {
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${operatorKey}`);
+  const response = await fetch(path, { ...init, headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    if (response.status === 401) window.dispatchEvent(new Event("northgate:unauthorized"));
+    throw new ApiError(response.status, payload?.error?.message ?? `Request failed (${response.status})`);
+  }
 }
 
 function rangeQuery(hours: number): URLSearchParams {
@@ -361,6 +456,53 @@ export async function loadProjects(operatorKey: string) {
   return request("/api/v1/projects", operatorKey, z.array(projectSchema));
 }
 
+export async function loadOrganizations(operatorKey: string) {
+  return request("/api/v1/organizations", operatorKey, z.array(organizationSchema));
+}
+
+export async function createOrganization(operatorKey: string, input: { name: string }) {
+  return request("/api/v1/organizations", operatorKey, organizationSchema, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function createProject(
+  operatorKey: string,
+  input: { organization_id: string; name: string },
+) {
+  return request("/api/v1/projects", operatorKey, projectSchema, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function loadApplicationKeys(operatorKey: string) {
+  return request("/api/v1/application-keys", operatorKey, z.array(applicationKeySchema));
+}
+
+export async function createApplicationKey(
+  operatorKey: string,
+  input: ApplicationKeyCreateInput,
+) {
+  return request("/api/v1/application-keys", operatorKey, createdApplicationKeySchema, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function revokeApplicationKey(operatorKey: string, keyId: string) {
+  return request(
+    `/api/v1/application-keys/${encodeURIComponent(keyId)}/revoke`,
+    operatorKey,
+    applicationKeySchema.pick({ id: true, created_at: true, revoked_at: true }),
+    { method: "POST" },
+  );
+}
+
 export async function loadGateways(operatorKey: string) {
   return request("/api/v1/gateways", operatorKey, z.array(gatewaySchema));
 }
@@ -375,6 +517,33 @@ export async function createGateway(operatorKey: string, input: { project_id: st
 
 export async function loadProviderCredentials(operatorKey: string) {
   return request("/api/v1/provider-credentials", operatorKey, z.array(providerCredentialSchema));
+}
+
+export async function createProviderCredential(
+  operatorKey: string,
+  input: ProviderCredentialCreateInput,
+) {
+  return request("/api/v1/provider-credentials", operatorKey, providerCredentialSchema, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function rotateProviderCredential(
+  operatorKey: string,
+  credentialId: string,
+  apiKey: string,
+) {
+  return requestEmpty(
+    `/api/v1/provider-credentials/${encodeURIComponent(credentialId)}/secret`,
+    operatorKey,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey }),
+    },
+  );
 }
 
 export async function loadRoutes(operatorKey: string) {
@@ -429,4 +598,21 @@ export async function replacePolicy(operatorKey: string, gatewayId: string, inpu
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
+}
+
+export async function loadReadiness(): Promise<Readiness> {
+  const response = await fetch("/health/ready");
+  return readinessSchema.parse(await response.json());
+}
+
+export async function loadStaleDiagnostics(
+  operatorKey: string,
+  minimumAgeSeconds: number,
+  limit = 100,
+) {
+  const query = new URLSearchParams({
+    minimum_age_seconds: String(minimumAgeSeconds),
+    limit: String(limit),
+  });
+  return request(`/api/v1/diagnostics/stale?${query}`, operatorKey, staleDiagnosticsSchema);
 }
