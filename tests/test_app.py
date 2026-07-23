@@ -1,4 +1,5 @@
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -34,8 +35,11 @@ async def test_metrics_are_disabled_by_default() -> None:
 
 
 @pytest.mark.anyio
-async def test_console_routes_fall_back_to_spa_index() -> None:
-    app = create_app(Settings(environment="test"))
+async def test_console_routes_fall_back_to_spa_index(tmp_path: Path) -> None:
+    console_directory = tmp_path / "console"
+    console_directory.mkdir()
+    (console_directory / "index.html").write_text("<main>Northgate Console</main>")
+    app = create_app(Settings(environment="test", console_directory=console_directory))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         index = await client.get("/console")
         nested = await client.get("/console/requests/req_12345678")
