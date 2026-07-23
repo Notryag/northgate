@@ -252,3 +252,14 @@ returns Dayboard to the single-tenant canary.
   plus protected client provisioning from a retained raw operator key.
 - Verified focused REST/CLI/MCP tests and the real PostgreSQL/Redis diagnostics
   integration path.
+- Deployed commits `3352c5a` and `5ab23bd` through verified backups, Alembic head
+  checks, readiness, and the Dayboard connectivity probe. Production `doctor`
+  confirmed schema version 1 through the protected file credential.
+- The two-hour `dayboard-canary` production sample returned 11 requests across 4
+  `run_id` groups, 34,638 total tokens, 10,496 confirmed cached prompt tokens,
+  five requests without cache detail, explicit lower-bound labelling, no
+  truncation, and no warning/error findings.
+- A real stdio MCP subprocess discovered all seven tools and returned the same
+  11-request/4-group aggregate. The first exercise exposed `httpx` INFO URL logs;
+  commit `5ab23bd` suppresses those dependency logs so metadata query values are
+  not emitted by default.
