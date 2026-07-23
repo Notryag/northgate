@@ -263,3 +263,31 @@ returns Dayboard to the single-tenant canary.
   11-request/4-group aggregate. The first exercise exposed `httpx` INFO URL logs;
   commit `5ab23bd` suppresses those dependency logs so metadata query values are
   not emitted by default.
+
+### 2026-07-23: Calibrated token admission reservations
+
+- Replaced raw whole-body byte estimation with model-visible prompt estimation.
+  Exact tokenizer registry matches are preferred; current OpenAI `gpt-4o`,
+  `gpt-5`, `o1`, `o3`, and `o4` family suffixes use `o200k_base`, while unrelated
+  unknown models retain the explicit UTF-8 byte fallback.
+- Split and persisted prompt estimate, output reserve, attempt multiplier,
+  margin, total reserve, estimator, and output source. Diagnostics, analytics,
+  CLI, MCP, Prometheus, and Console expose terminal actual, released tokens, and
+  estimate/actual ratio without returning request content.
+- Added request, route, model, and global output-limit precedence. Production had
+  38 complete Dayboard requests with completion tokens from 7 through 94; the
+  Dayboard primary route was set to 512 tokens, retaining more than five times
+  the observed maximum while explicit request limits can still override it.
+- The original 11-request incident sample reserved 165,200 tokens for 34,638
+  actual tokens, a 4.77x aggregate ratio. A post-deployment Chinese, eight-tool
+  production probe reported 691 prompt and 7 completion tokens. Northgate
+  estimated 639 prompt tokens and 735 including the per-attempt safety margin.
+  With the route default and two-attempt plan it reserved 2,494 tokens (3.57x);
+  the former algorithm on the identical body would reserve 10,128 (14.51x), so
+  the controlled reservation fell 75.4%.
+- The release boundary passed Ruff and format checks, 112 non-integration tests,
+  9 required PostgreSQL/Redis integration tests, Console TypeScript and production
+  builds, Compose validation, and Alembic single-head verification. Production
+  upgraded to `0017` from verified backup
+  `backups/northgate-20260723T030211Z.dump`; readiness, the Dayboard application
+  probe, diagnostics doctor, and post-deployment ledger inspection passed.

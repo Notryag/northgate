@@ -39,6 +39,42 @@ def _agent_body(*, model: str, max_tokens: int | None = None) -> bytes:
     return json.dumps(payload, ensure_ascii=False).encode()
 
 
+def _production_probe_body() -> bytes:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": f"reservation_probe_{index}",
+                "description": "查询日程并返回结构化结果，仅用于网关 token 估算校准",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "用户查询"},
+                        "timezone": {"type": "string"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+        for index in range(8)
+    ]
+    return json.dumps(
+        {
+            "model": "gpt-5.4-mini",
+            "messages": [
+                {"role": "system", "content": "你是一个严谨的日程助手，请简短回答。"},
+                {"role": "user", "content": "只回复“校准完成”，不要调用工具。"},
+            ],
+            "tools": tools,
+            "tool_choice": "none",
+            "stream": False,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+
+
 def test_known_model_estimates_chinese_messages_and_tool_schemas() -> None:
     body = _agent_body(model="gpt-4o-mini")
 
@@ -81,6 +117,25 @@ def test_known_openai_model_family_uses_current_encoding_before_registry_catches
 
     assert reservation.estimator == "tiktoken:o200k_base"
     assert reservation.output_limit_source == "route"
+
+
+def test_production_probe_prompt_estimate_stays_inside_provider_measured_safety_band() -> None:
+    provider_prompt_tokens = 691
+    reservation = estimate_token_reservation(
+        _production_probe_body(),
+        model="gpt-5.4-mini",
+        route_default_output_tokens=512,
+        model_output_defaults={},
+        global_default_output_tokens=4096,
+        margin_percent=15,
+        attempt_multiplier=2,
+    )
+    margin_per_attempt = reservation.reservation_margin_tokens // reservation.attempt_multiplier
+    admission_prompt_tokens = reservation.estimated_prompt_tokens + margin_per_attempt
+
+    assert 0.85 <= reservation.estimated_prompt_tokens / provider_prompt_tokens <= 1.15
+    assert provider_prompt_tokens <= admission_prompt_tokens <= provider_prompt_tokens * 1.2
+    assert reservation.reserved_total_tokens == 2494
 
 
 def test_unknown_model_fallback_is_bounded_and_ignores_non_visible_fields() -> None:

@@ -199,7 +199,7 @@ CI has separate jobs:
   `integration` with store failures configured to fail rather than skip.
 
 At this review, migration `0017` is the single Alembic head. The local suite has
-not yet been recounted at the release boundary. Counts are a snapshot, not
+112 non-integration and 9 real-store integration tests. Counts are a snapshot, not
 a contract; new behavior should add proportional coverage.
 
 ## Open work

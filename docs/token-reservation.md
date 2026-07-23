@@ -99,3 +99,10 @@ an explicit high output limit is therefore not classified by itself.
 Changing these values changes admission behavior. Calibrate route or model output
 defaults from provider-reported usage and application requirements; do not lower
 unknown-model prompt safety merely to improve apparent utilization.
+
+The current known-model regression safety band requires the raw prompt estimate
+to remain within 15% of a provider-reported prompt count and the estimate plus
+per-attempt margin to cover the provider count without exceeding it by more than
+20%. A 2026-07-23 production probe with Chinese messages and eight tool schemas
+measured 691 provider prompt tokens, a 639-token estimate, and 735 tokens after
+the per-attempt margin.
