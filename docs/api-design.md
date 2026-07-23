@@ -1,7 +1,7 @@
 # API design
 
 Status: partially implemented  
-Last reviewed: 2026-07-17
+Last reviewed: 2026-07-23
 
 The OpenAI chat-completions path and initial database-backed control plane are
 implemented. Other provider-native paths remain design proposals.
@@ -190,6 +190,14 @@ inconsistencies, distinguishes recoverable settlement events from unprotected
 records, and joins matching active or expired Redis concurrency leases. Redis
 inspection is capped at 1,000 policy keys and reports truncation rather than
 silently treating an incomplete scan as complete.
+
+`/api/v1/diagnostics/usage` accepts one metadata filter, an optional second
+metadata key for grouping, a maximum 90-day range, and a request limit up to 100.
+It returns the same versioned request diagnostics plus page and group aggregates,
+observed trust classes, confirmed cached prompt tokens, missing cache-detail
+counts, lower-bound labelling, retry/fallback counts, and explicit `has_more`.
+`/api/v1/diagnostics/capabilities` is an authenticated, database-independent
+schema compatibility check used by `northgate-inspect doctor`.
 
 ## Implemented control-plane resources
 

@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
@@ -88,6 +89,55 @@ def find_stale_settlements(
             limit=limit,
         )
     )
+
+
+@server.tool(annotations=_READ_ONLY, structured_output=True)
+def inspect_usage_range(
+    metadata_key: Annotated[str, Field(min_length=1, max_length=64)],
+    metadata_value: Annotated[str, Field(min_length=1, max_length=256)],
+    group_by: Annotated[str | None, Field(min_length=1, max_length=64)] = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: Annotated[int, Field(ge=1, le=100)] = 100,
+) -> dict[str, object]:
+    """Aggregate bounded usage and findings for one metadata filter."""
+    now = datetime.now(UTC)
+    resolved_end = end or now.isoformat()
+    resolved_start = start or (now - timedelta(hours=24)).isoformat()
+    return _execute(
+        lambda client: client.inspect_usage(
+            metadata_key=metadata_key,
+            metadata_value=metadata_value,
+            group_by=group_by,
+            start=resolved_start,
+            end=resolved_end,
+            limit=limit,
+        )
+    )
+
+
+@server.tool(annotations=_READ_ONLY, structured_output=True)
+def list_recent_correlations(
+    application: Annotated[str, Field(min_length=1, max_length=200)],
+    group_by: Annotated[str, Field(min_length=1, max_length=64)] = "run_id",
+    since_seconds: Annotated[int, Field(ge=60, le=7776000)] = 7200,
+    limit: Annotated[int, Field(ge=1, le=100)] = 100,
+) -> dict[str, object]:
+    """List recent grouped correlations for a Northgate application name or ID."""
+    now = datetime.now(UTC)
+
+    def inspect(client: OperatorDiagnosticsClient) -> dict[str, object]:
+        application_id = client.resolve_application(application)
+        return client.inspect_usage(
+            metadata_key="northgate.application_id",
+            metadata_value=application_id,
+            group_by=group_by,
+            start=(now - timedelta(seconds=since_seconds)).isoformat(),
+            end=now.isoformat(),
+            limit=limit,
+        )
+
+    return _execute(inspect)
 
 
 @server.tool(annotations=_READ_ONLY, structured_output=True)

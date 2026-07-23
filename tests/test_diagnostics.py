@@ -3,7 +3,11 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from northgate.db.models import ProviderAttemptRecord, RequestRecord, SettlementEvent
-from northgate.diagnostics import build_correlated_diagnostic, build_request_diagnostic
+from northgate.diagnostics import (
+    build_correlated_diagnostic,
+    build_request_diagnostic,
+    build_usage_diagnostic,
+)
 
 
 def _request(
@@ -168,5 +172,63 @@ def test_correlated_diagnostic_aggregates_known_usage_and_missing_records() -> N
         "cost_microusd": 17,
         "usage_missing_requests": 1,
         "prompt_cache_percent": 0.0,
+        "cached_usage_missing_requests": 0,
+        "prompt_cache_percent_is_lower_bound": False,
+        "retry_fallback_requests": 0,
     }
     assert result["finding_counts"]["REQUEST_STILL_STARTED"] == 1
+
+
+def test_usage_diagnostic_groups_values_and_marks_incomplete_cache_ratio() -> None:
+    first = build_request_diagnostic(
+        _request(
+            request_id="req-first",
+            outcome="succeeded",
+            total_tokens=2463,
+            cached_prompt_tokens=1000,
+            metadata_trust={"run_id": "untrusted"},
+        ),
+        [_attempt(request_id="req-first", outcome="succeeded", total_tokens=2463)],
+        [_event("req-first")],
+        settlement_expected=True,
+    )
+    second_record = _request(
+        request_id="req-second",
+        outcome="succeeded",
+        total_tokens=2463,
+        cached_prompt_tokens=None,
+        metadata_trust={"run_id": "untrusted"},
+    )
+    second = build_request_diagnostic(
+        second_record,
+        [_attempt(request_id="req-second", outcome="succeeded", total_tokens=2463)],
+        [_event("req-second")],
+        settlement_expected=True,
+    )
+    now = datetime.now(UTC)
+
+    result = build_usage_diagnostic(
+        [first, second],
+        metadata_key="user_id",
+        metadata_value="user-test",
+        group_by="run_id",
+        group_values=[("run-a", "fixed"), ("run-b", "untrusted")],
+        filter_trust_values=["fixed", "fixed"],
+        start=now,
+        end=now,
+        has_more=True,
+    )
+
+    assert result["filter"] == {
+        "metadata_key": "user_id",
+        "metadata_value": "user-test",
+        "metadata_trust": ["fixed"],
+    }
+    assert result["has_more"] is True
+    assert result["aggregate"]["cached_usage_missing_requests"] == 1
+    assert result["aggregate"]["prompt_cache_percent_is_lower_bound"] is True
+    assert {item["metadata_value"] for item in result["groups"]} == {"run-a", "run-b"}
+    assert {tuple(item["metadata_trust"]) for item in result["groups"]} == {
+        ("fixed",),
+        ("untrusted",),
+    }

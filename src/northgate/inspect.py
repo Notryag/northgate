@@ -4,10 +4,13 @@ import os
 import re
 import stat
 import sys
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TextIO
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -16,6 +19,8 @@ EXIT_FINDINGS = 2
 EXIT_AUTH = 3
 EXIT_SERVICE = 4
 _DURATION = re.compile(r"^(\d+)([smh]?)$")
+_SINCE_DURATION = re.compile(r"^(\d+)([mhd])$")
+_TODAY_AT = re.compile(r"^today@(\d{2}):(\d{2})$")
 
 
 class InspectError(Exception):
@@ -35,6 +40,7 @@ class InspectConfig:
     base_url: str
     operator_key: str
     timeout_seconds: float = 30.0
+    credential_source: str = "environment"
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "InspectConfig":
@@ -70,6 +76,7 @@ class InspectConfig:
             base_url=base_url.rstrip("/"),
             operator_key=operator_key,
             timeout_seconds=timeout_seconds,
+            credential_source="environment" if inline_key else "file",
         )
 
 
@@ -136,12 +143,66 @@ class OperatorDiagnosticsClient:
             params={"minimum_age_seconds": minimum_age_seconds, "limit": limit},
         )
 
+    def inspect_usage(
+        self,
+        *,
+        metadata_key: str,
+        metadata_value: str,
+        group_by: str | None,
+        start: str,
+        end: str,
+        limit: int,
+    ) -> dict[str, object]:
+        params: dict[str, str | int] = {
+            "metadata_key": metadata_key,
+            "metadata_value": metadata_value,
+            "start": start,
+            "end": end,
+            "limit": limit,
+        }
+        if group_by is not None:
+            params["group_by"] = group_by
+        return self._get("/api/v1/diagnostics/usage", params=params)
+
+    def capabilities(self) -> dict[str, object]:
+        return self._get("/api/v1/diagnostics/capabilities")
+
+    def resolve_application(self, name_or_id: str) -> str:
+        payload = self._get_json("/api/v1/application-keys", require_schema=False)
+        if not isinstance(payload, list):
+            raise InspectServiceError("Operator API returned an invalid application list")
+        matches = [
+            item
+            for item in payload
+            if isinstance(item, dict)
+            and (item.get("id") == name_or_id or item.get("name") == name_or_id)
+        ]
+        if not matches:
+            raise InspectServiceError("Application was not found")
+        exact_ids = [item for item in matches if item.get("id") == name_or_id]
+        selected = exact_ids or matches
+        if len(selected) != 1 or not isinstance(selected[0].get("id"), str):
+            raise InspectServiceError("Application name is ambiguous; use its application ID")
+        return str(selected[0]["id"])
+
     def _get(
         self,
         path: str,
         *,
         params: Mapping[str, str | int] | None = None,
     ) -> dict[str, object]:
+        payload = self._get_json(path, params=params)
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise InspectServiceError("Operator API returned an unsupported diagnostics schema")
+        return payload
+
+    def _get_json(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, str | int] | None = None,
+        require_schema: bool = True,
+    ) -> object:
         try:
             response = self.client.get(
                 f"{self.config.base_url}{path}",
@@ -162,7 +223,7 @@ class OperatorDiagnosticsClient:
             payload = response.json()
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise InspectServiceError("Operator API returned invalid JSON") from exc
-        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        if require_schema and (not isinstance(payload, dict) or payload.get("schema_version") != 1):
             raise InspectServiceError("Operator API returned an unsupported diagnostics schema")
         return payload
 
@@ -198,6 +259,33 @@ def _parser() -> argparse.ArgumentParser:
     stale.add_argument("--minimum-age", type=_duration_seconds, default=300, metavar="DURATION")
     stale.add_argument("--limit", type=int, default=100, choices=range(1, 101), metavar="1..100")
     stale.add_argument("--json", action="store_true", dest="json_output")
+
+    usage = commands.add_parser("usage", help="Aggregate a bounded metadata-filtered time range")
+    usage.add_argument("--metadata-key", required=True)
+    usage.add_argument("--metadata-value", required=True)
+    usage.add_argument("--group-by")
+    usage_range = usage.add_mutually_exclusive_group()
+    usage_range.add_argument("--start")
+    usage_range.add_argument("--since")
+    usage.add_argument("--end", default="now")
+    usage.add_argument("--timezone", default="UTC")
+    usage.add_argument("--limit", type=int, default=100, choices=range(1, 101), metavar="1..100")
+    usage.add_argument("--json", action="store_true", dest="json_output")
+
+    recent = commands.add_parser(
+        "recent", help="List recent grouped correlations for an application"
+    )
+    recent.add_argument("--application", required=True)
+    recent.add_argument("--group-by", default="run_id")
+    recent.add_argument("--since", default="2h")
+    recent.add_argument("--timezone", default="UTC")
+    recent.add_argument("--limit", type=int, default=100, choices=range(1, 101), metavar="1..100")
+    recent.add_argument("--json", action="store_true", dest="json_output")
+
+    doctor = commands.add_parser(
+        "doctor", help="Check configuration and Operator API compatibility"
+    )
+    doctor.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
 
@@ -211,6 +299,57 @@ def _duration_seconds(value: str) -> int:
     if seconds < 30 or seconds > 86400:
         raise argparse.ArgumentTypeError("duration must be between 30s and 24h")
     return seconds
+
+
+def _timezone(value: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(value)
+    except ZoneInfoNotFoundError as exc:
+        raise InspectError(f"Unknown timezone: {value}") from exc
+
+
+def _time(value: str, *, timezone: ZoneInfo, now: datetime) -> datetime:
+    if value == "now":
+        return now
+    today_match = _TODAY_AT.fullmatch(value)
+    if today_match is not None:
+        hour, minute = (int(part) for part in today_match.groups())
+        if hour > 23 or minute > 59:
+            raise InspectError("today@ time must use HH:MM")
+        return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise InspectError(f"Invalid time: {value}") from exc
+    return parsed.replace(tzinfo=timezone) if parsed.tzinfo is None else parsed
+
+
+def _time_range(
+    *,
+    start: str | None,
+    since: str | None,
+    end: str,
+    timezone_name: str,
+    default_since: timedelta,
+) -> tuple[str, str]:
+    timezone = _timezone(timezone_name)
+    now = datetime.now(timezone)
+    resolved_end = _time(end, timezone=timezone, now=now)
+    if start is not None:
+        resolved_start = _time(start, timezone=timezone, now=now)
+    elif since is not None:
+        match = _SINCE_DURATION.fullmatch(since)
+        if match is not None:
+            amount = int(match.group(1))
+            multiplier = {"m": 60, "h": 3600, "d": 86400}[match.group(2)]
+            resolved_start = resolved_end - timedelta(seconds=amount * multiplier)
+        else:
+            resolved_start = _time(since, timezone=timezone, now=now)
+    else:
+        resolved_start = resolved_end - default_since
+    if resolved_start >= resolved_end or resolved_end - resolved_start > timedelta(days=90):
+        raise InspectError("Time range must be positive and no longer than 90 days")
+    return resolved_start.isoformat(), resolved_end.isoformat()
 
 
 def _finding_count(payload: dict[str, object]) -> int:
@@ -279,6 +418,107 @@ def _human_stale(payload: dict[str, object], output: TextIO) -> None:
     _human_findings(payload, output)
 
 
+def _human_usage(payload: dict[str, object], output: TextIO, *, timezone: str) -> None:
+    aggregate = payload.get("aggregate")
+    filter_value = payload.get("filter")
+    groups = payload.get("groups")
+    if not isinstance(aggregate, dict) or not isinstance(filter_value, dict):
+        raise InspectServiceError("Diagnostics response is missing usage aggregates")
+    cache_percent = aggregate.get("prompt_cache_percent")
+    cache_label = "at least " if aggregate.get("prompt_cache_percent_is_lower_bound") else ""
+    cache_display = f"{cache_label}{cache_percent}%" if cache_percent is not None else "unknown"
+    print(
+        f"Range: {payload.get('start')} to {payload.get('end')}  Timezone: {timezone}", file=output
+    )
+    print(
+        f"Filter: {filter_value.get('metadata_key')}={filter_value.get('metadata_value')}  "
+        f"Requests: {aggregate.get('requests')}  "
+        f"Groups: {len(groups) if isinstance(groups, list) else 0}",
+        file=output,
+    )
+    print(
+        f"Tokens: prompt={aggregate.get('prompt_tokens')} "
+        f"completion={aggregate.get('completion_tokens')} total={aggregate.get('total_tokens')}  "
+        f"Cached prompt: {aggregate.get('cached_prompt_tokens')} "
+        f"({cache_display})  "
+        f"Missing cache detail: {aggregate.get('cached_usage_missing_requests')}",
+        file=output,
+    )
+    if isinstance(groups, list) and groups:
+        print(f"Grouped by {payload.get('group_by')}:", file=output)
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("aggregate"), dict):
+                continue
+            group_aggregate = group["aggregate"]
+            trust = ",".join(group.get("metadata_trust", [])) or "unknown"
+            print(
+                f"  {group.get('metadata_value')}: requests={group_aggregate.get('requests')} "
+                f"total={group_aggregate.get('total_tokens')} "
+                f"cached={group_aggregate.get('cached_prompt_tokens')} trust={trust}",
+                file=output,
+            )
+    requests = payload.get("requests")
+    if isinstance(requests, list) and requests:
+        print("Requests:", file=output)
+        for diagnostic in requests:
+            if not isinstance(diagnostic, dict) or not isinstance(diagnostic.get("request"), dict):
+                continue
+            request = diagnostic["request"]
+            attempts = diagnostic.get("attempts")
+            print(
+                f"  {request.get('request_id')}: outcome={request.get('outcome')} "
+                f"model={request.get('model')} latency_ms={request.get('latency_ms')} "
+                f"attempts={len(attempts) if isinstance(attempts, list) else 0}",
+                file=output,
+            )
+    if payload.get("has_more") is True:
+        print(
+            "Result truncated: totals and groups cover only the returned request page", file=output
+        )
+    _human_findings_by_severity(payload, output)
+
+
+def _human_findings_by_severity(payload: dict[str, object], output: TextIO) -> None:
+    findings = payload.get("findings")
+    if not isinstance(findings, list) or not findings:
+        print("Findings: none", file=output)
+        return
+    grouped: dict[str, Counter[str]] = {}
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        severity = str(finding.get("severity", "unknown"))
+        code = str(finding.get("code", "UNKNOWN"))
+        grouped.setdefault(severity, Counter())[code] += 1
+    print("Findings by severity:", file=output)
+    for severity in ("error", "warning", "info", "unknown"):
+        if severity not in grouped:
+            continue
+        values = ", ".join(f"{code}={count}" for code, count in sorted(grouped[severity].items()))
+        print(f"  {severity}: {values}", file=output)
+
+
+def _doctor_payload(config: InspectConfig, capabilities: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema_version": capabilities["schema_version"],
+        "base_url": config.base_url,
+        "credential_source": config.credential_source,
+        "credential_valid": True,
+        "operator_api_reachable": True,
+        "operator_api_authorized": True,
+        "compatible": capabilities.get("schema_version") == 1,
+        "capabilities": capabilities.get("capabilities", []),
+    }
+
+
+def _human_doctor(payload: dict[str, object], output: TextIO) -> None:
+    print(f"Base URL: {payload.get('base_url')}", file=output)
+    print(f"Credential source: {payload.get('credential_source')}", file=output)
+    print("Credential validation: passed", file=output)
+    print("Operator API: reachable and authorized", file=output)
+    print(f"Diagnostics schema: {payload.get('schema_version')} (compatible)", file=output)
+
+
 def _human_findings(payload: dict[str, object], output: TextIO) -> None:
     finding_counts = payload.get("finding_counts")
     if isinstance(finding_counts, dict):
@@ -322,9 +562,44 @@ def run_cli(
                 )
             elif args.command == "request":
                 payload = diagnostics.inspect_request(args.request_id)
-            else:
+            elif args.command == "stale":
                 payload = diagnostics.inspect_stale(
                     minimum_age_seconds=args.minimum_age,
+                    limit=args.limit,
+                )
+            elif args.command == "doctor":
+                payload = _doctor_payload(config, diagnostics.capabilities())
+            elif args.command == "usage":
+                start, end = _time_range(
+                    start=args.start,
+                    since=args.since,
+                    end=args.end,
+                    timezone_name=args.timezone,
+                    default_since=timedelta(hours=24),
+                )
+                payload = diagnostics.inspect_usage(
+                    metadata_key=args.metadata_key,
+                    metadata_value=args.metadata_value,
+                    group_by=args.group_by,
+                    start=start,
+                    end=end,
+                    limit=args.limit,
+                )
+            else:
+                start, end = _time_range(
+                    start=None,
+                    since=args.since,
+                    end="now",
+                    timezone_name=args.timezone,
+                    default_since=timedelta(hours=2),
+                )
+                application_id = diagnostics.resolve_application(args.application)
+                payload = diagnostics.inspect_usage(
+                    metadata_key="northgate.application_id",
+                    metadata_value=application_id,
+                    group_by=args.group_by,
+                    start=start,
+                    end=end,
                     limit=args.limit,
                 )
         finally:
@@ -335,6 +610,10 @@ def run_cli(
             _human_run(payload, output)
         elif args.command == "stale":
             _human_stale(payload, output)
+        elif args.command in ("usage", "recent"):
+            _human_usage(payload, output, timezone=args.timezone)
+        elif args.command == "doctor":
+            _human_doctor(payload, output)
         else:
             _human_request(payload, output)
         return EXIT_FINDINGS if _finding_count(payload) else EXIT_HEALTHY

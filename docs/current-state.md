@@ -1,7 +1,7 @@
 # Current implementation state
 
 Status: implemented snapshot  
-Last reviewed: 2026-07-22
+Last reviewed: 2026-07-23
 
 This page is the shortest authoritative description of what the current codebase
 does. It deliberately separates implemented behavior from accepted or proposed
@@ -38,7 +38,7 @@ authentication, retry, usage, or error behavior.
 | `northgate-reconcile` | Preview or mark stale unprotected ledger records and release stale/expired leases |
 | `northgate-bootstrap` | Idempotently create the initial database-backed gateway configuration |
 | `northgate-verify` | Check non-streaming, SSE, and tool-call compatibility without logging content |
-| `northgate-inspect` | Inspect correlated runs, requests, and stale settlement state through the Operator API |
+| `northgate-inspect` | Inspect requests, grouped usage, recent correlations, compatibility, and stale state through the Operator API |
 | `northgate-mcp` | Expose the same bounded read-only diagnostics as MCP tools over stdio |
 
 The data plane and control plane still run in one FastAPI process. The settlement
@@ -48,12 +48,15 @@ in-memory gateway configuration snapshots are not implemented.
 The joined diagnostics service and Operator REST endpoints can inspect one
 request or correlate bounded request sets by allowlisted metadata. They return a
 versioned shape containing request, attempt, redacted settlement state,
-aggregates, metadata trust, and stable findings. `northgate-inspect` exposes the
-correlated-run, individual-request, and stale-settlement contracts with JSON or
-human output. Stale diagnostics distinguish records protected by a recoverable
+aggregates, metadata trust, and stable findings. `northgate-inspect` exposes
+correlated-run, individual-request, time-range usage, recent grouped correlation,
+doctor, and stale-settlement workflows with JSON or human output. Time-range
+usage is bounded to 100 requests, preserves observed metadata trust, labels
+incomplete cache percentages as lower bounds, and keeps truncation explicit.
+Stale diagnostics distinguish records protected by a recoverable
 settlement event, unprotected records, request-only/attempt-only inconsistencies,
 and active or expired Redis concurrency leases. The read-only operator MCP server
-exposes five tools over stdio and calls the same Operator REST endpoints. It does
+exposes seven tools over stdio and calls the same Operator REST endpoints. It does
 not query PostgreSQL or Redis directly and does not expose an unauthenticated HTTP
 transport.
 

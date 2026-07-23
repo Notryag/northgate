@@ -220,6 +220,13 @@ def build_correlated_diagnostic(
 
     prompt_tokens = total("prompt_tokens")
     cached_prompt_tokens = total("cached_prompt_tokens")
+    cached_usage_missing_requests = sum(
+        1
+        for request in requests
+        if isinstance(request, dict)
+        and request.get("prompt_tokens") is not None
+        and request.get("cached_prompt_tokens") is None
+    )
     finding_counts = Counter(
         finding["code"]
         for finding in findings
@@ -246,11 +253,80 @@ def build_correlated_diagnostic(
             "prompt_cache_percent": (
                 round(cached_prompt_tokens * 100 / prompt_tokens, 2) if prompt_tokens else None
             ),
+            "cached_usage_missing_requests": cached_usage_missing_requests,
+            "prompt_cache_percent_is_lower_bound": cached_usage_missing_requests > 0,
+            "retry_fallback_requests": sum(
+                1
+                for item in diagnostics
+                if isinstance(item.get("attempts"), list) and len(item["attempts"]) > 1
+            ),
         },
         "finding_counts": dict(sorted(finding_counts.items())),
         "requests": list(diagnostics),
         "findings": findings,
     }
+
+
+def build_usage_diagnostic(
+    diagnostics: Sequence[dict[str, object]],
+    *,
+    metadata_key: str,
+    metadata_value: str,
+    group_by: str | None,
+    group_values: Sequence[tuple[str | None, str | None]],
+    filter_trust_values: Sequence[str | None],
+    start: datetime,
+    end: datetime,
+    has_more: bool,
+) -> dict[str, object]:
+    result = build_correlated_diagnostic(
+        diagnostics,
+        metadata_key=metadata_key,
+        metadata_value=metadata_value,
+        start=start,
+        end=end,
+        has_more=has_more,
+    )
+    result["filter"] = result.pop("correlation")
+    result["filter"]["metadata_trust"] = sorted(
+        {value for value in filter_trust_values if value is not None}
+    )
+    result["group_by"] = group_by
+    if group_by is None:
+        result["groups"] = []
+        return result
+
+    grouped: dict[str | None, list[tuple[dict[str, object], str | None]]] = defaultdict(list)
+    for diagnostic, (value, trust) in zip(diagnostics, group_values, strict=True):
+        grouped[value].append((diagnostic, trust))
+
+    groups: list[dict[str, object]] = []
+    for value, items in grouped.items():
+        group_diagnostics = [item[0] for item in items]
+        aggregate = build_correlated_diagnostic(
+            group_diagnostics,
+            metadata_key=metadata_key,
+            metadata_value=metadata_value,
+            start=start,
+            end=end,
+            has_more=False,
+        )
+        groups.append(
+            {
+                "metadata_value": value,
+                "metadata_trust": sorted({trust for _, trust in items if trust is not None}),
+                "aggregate": aggregate["aggregate"],
+                "finding_counts": aggregate["finding_counts"],
+                "latest_started_at": max(
+                    str(item["request"]["started_at"])
+                    for item in group_diagnostics
+                    if isinstance(item.get("request"), dict)
+                ),
+            }
+        )
+    groups.sort(key=lambda item: str(item["latest_started_at"]), reverse=True)
+    result["groups"] = groups
+    return result
 
 
 class DiagnosticsService:
@@ -347,6 +423,90 @@ class DiagnosticsService:
             diagnostics,
             metadata_key=metadata_key,
             metadata_value=metadata_value,
+            start=start,
+            end=end,
+            has_more=has_more,
+        )
+
+    async def inspect_usage(
+        self,
+        *,
+        metadata_key: str,
+        metadata_value: str,
+        group_by: str | None,
+        start: datetime,
+        end: datetime,
+        limit: int,
+    ) -> dict[str, object]:
+        async with self.database.sessions() as session:
+            records = list(
+                (
+                    await session.scalars(
+                        select(RequestRecord)
+                        .where(
+                            RequestRecord.started_at >= start,
+                            RequestRecord.started_at < end,
+                            RequestRecord.request_metadata[metadata_key].as_string()
+                            == metadata_value,
+                        )
+                        .order_by(RequestRecord.started_at.desc(), RequestRecord.request_id.desc())
+                        .limit(limit + 1)
+                    )
+                ).all()
+            )
+            has_more = len(records) > limit
+            records = records[:limit]
+            request_ids = [record.request_id for record in records]
+            attempts: Sequence[ProviderAttemptRecord] = ()
+            events: Sequence[SettlementEvent] = ()
+            if request_ids:
+                attempts = (
+                    await session.scalars(
+                        select(ProviderAttemptRecord).where(
+                            ProviderAttemptRecord.request_id.in_(request_ids)
+                        )
+                    )
+                ).all()
+                events = (
+                    await session.scalars(
+                        select(SettlementEvent).where(SettlementEvent.request_id.in_(request_ids))
+                    )
+                ).all()
+
+        attempts_by_request: dict[str, list[ProviderAttemptRecord]] = defaultdict(list)
+        for attempt in attempts:
+            attempts_by_request[attempt.request_id].append(attempt)
+        events_by_request: dict[str, list[SettlementEvent]] = defaultdict(list)
+        for event in events:
+            events_by_request[event.request_id].append(event)
+        diagnostics = [
+            build_request_diagnostic(
+                record,
+                attempts_by_request[record.request_id],
+                events_by_request[record.request_id],
+                settlement_expected=self.settlement_expected,
+            )
+            for record in records
+        ]
+        group_values = [
+            (
+                (record.request_metadata or {}).get(group_by) if group_by is not None else None,
+                (record.request_metadata_trust or {}).get(group_by)
+                if group_by is not None
+                else None,
+            )
+            for record in records
+        ]
+        filter_trust_values = [
+            (record.request_metadata_trust or {}).get(metadata_key) for record in records
+        ]
+        return build_usage_diagnostic(
+            diagnostics,
+            metadata_key=metadata_key,
+            metadata_value=metadata_value,
+            group_by=group_by,
+            group_values=group_values,
+            filter_trust_values=filter_trust_values,
             start=start,
             end=end,
             has_more=has_more,
@@ -610,6 +770,67 @@ async def diagnostics_correlated(
         limit=limit,
     )
     return JSONResponse(result)
+
+
+async def diagnostics_usage(
+    request: Request,
+    metadata_key: str,
+    metadata_value: str,
+    group_by: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=100),
+) -> Response:
+    authorization_error = authorize_operator(request)
+    if authorization_error is not None:
+        return authorization_error
+    if (
+        not _METADATA_KEY.fullmatch(metadata_key)
+        or not 1 <= len(metadata_value) <= 256
+        or (group_by is not None and not _METADATA_KEY.fullmatch(group_by))
+    ):
+        return JSONResponse(
+            {"error": {"code": "INVALID_METADATA_FILTER", "message": "Invalid metadata filter"}},
+            status_code=400,
+        )
+    selected_range = _range(start, end)
+    if selected_range is None:
+        return JSONResponse(
+            {"error": {"code": "INVALID_TIME_RANGE", "message": "Invalid time range"}},
+            status_code=400,
+        )
+    database = _database(request)
+    if database is None:
+        return JSONResponse(
+            {"error": {"code": "DIAGNOSTICS_UNAVAILABLE", "message": "Diagnostics unavailable"}},
+            status_code=503,
+        )
+    resolved_start, resolved_end = selected_range
+    result = await DiagnosticsService(
+        database,
+        settlement_expected=request.app.state.settings.settlement_outbox_enabled,
+    ).inspect_usage(
+        metadata_key=metadata_key,
+        metadata_value=metadata_value,
+        group_by=group_by,
+        start=resolved_start,
+        end=resolved_end,
+        limit=limit,
+    )
+    return JSONResponse(result)
+
+
+async def diagnostics_capabilities(request: Request) -> Response:
+    authorization_error = authorize_operator(request)
+    if authorization_error is not None:
+        return authorization_error
+    return JSONResponse(
+        {
+            "schema_version": DIAGNOSTICS_SCHEMA_VERSION,
+            "service": "northgate-diagnostics",
+            "capabilities": ["request", "correlated", "usage", "stale"],
+        }
+    )
 
 
 async def diagnostics_stale(

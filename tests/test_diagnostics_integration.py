@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -85,8 +86,8 @@ async def test_operator_can_inspect_correlated_healthy_and_incomplete_requests()
                         request_id=healthy_id,
                         provider="openai",
                         model="gpt-test",
-                        request_metadata={"run_id": run_id},
-                        request_metadata_trust={"run_id": "untrusted"},
+                        request_metadata={"run_id": run_id, "user_id": "user-test"},
+                        request_metadata_trust={"run_id": "untrusted", "user_id": "fixed"},
                         cost_microusd=17,
                         outcome="succeeded",
                         http_status=200,
@@ -105,7 +106,7 @@ async def test_operator_can_inspect_correlated_healthy_and_incomplete_requests()
                         request_id=incomplete_id,
                         provider="openai",
                         model="gpt-test",
-                        request_metadata={"run_id": run_id},
+                        request_metadata={"run_id": run_id, "user_id": "user-test"},
                         request_metadata_trust=None,
                         outcome="started",
                         http_status=200,
@@ -117,8 +118,8 @@ async def test_operator_can_inspect_correlated_healthy_and_incomplete_requests()
                         request_id=protected_id,
                         provider="openai",
                         model="gpt-test",
-                        request_metadata={"run_id": run_id},
-                        request_metadata_trust={"run_id": "untrusted"},
+                        request_metadata={"run_id": run_id, "user_id": "user-test"},
+                        request_metadata_trust={"run_id": "untrusted", "user_id": "fixed"},
                         outcome="started",
                         http_status=200,
                         estimated_tokens=3000,
@@ -129,8 +130,8 @@ async def test_operator_can_inspect_correlated_healthy_and_incomplete_requests()
                         request_id=attempt_only_id,
                         provider="openai",
                         model="gpt-test",
-                        request_metadata={"run_id": run_id},
-                        request_metadata_trust={"run_id": "untrusted"},
+                        request_metadata={"run_id": run_id, "user_id": "user-test"},
+                        request_metadata_trust={"run_id": "untrusted", "user_id": "fixed"},
                         outcome="succeeded",
                         http_status=200,
                         prompt_tokens=8,
@@ -273,6 +274,20 @@ async def test_operator_can_inspect_correlated_healthy_and_incomplete_requests()
                 params={"minimum_age_seconds": 30, "limit": 10},
                 headers={"Authorization": f"Bearer {operator_key}"},
             )
+            usage_response = await client.get(
+                "/api/v1/diagnostics/usage",
+                params={
+                    "metadata_key": "user_id",
+                    "metadata_value": "user-test",
+                    "group_by": "run_id",
+                    "limit": 10,
+                },
+                headers={"Authorization": f"Bearer {operator_key}"},
+            )
+            capabilities_response = await client.get(
+                "/api/v1/diagnostics/capabilities",
+                headers={"Authorization": f"Bearer {operator_key}"},
+            )
 
         assert unauthorized.status_code == 401
         assert response.status_code == 200
@@ -310,6 +325,27 @@ async def test_operator_can_inspect_correlated_healthy_and_incomplete_requests()
         assert stale_by_id[protected_id]["concurrency_leases"][0]["expired"] is True
         assert stale_by_id[attempt_only_id]["request_started"] is False
         assert stale_by_id[attempt_only_id]["stale_attempt_indexes"] == [1]
+        assert usage_response.status_code == 200
+        usage_payload = usage_response.json()
+        assert usage_payload["schema_version"] == 1
+        assert usage_payload["filter"] == {
+            "metadata_key": "user_id",
+            "metadata_value": "user-test",
+            "metadata_trust": ["fixed"],
+        }
+        assert usage_payload["aggregate"]["requests"] == 4
+        assert usage_payload["aggregate"]["total_tokens"] == 2473
+        assert usage_payload["aggregate"]["cached_usage_missing_requests"] == 0
+        assert usage_payload["groups"][0]["metadata_value"] == run_id
+        assert usage_payload["groups"][0]["metadata_trust"] == ["untrusted"]
+        assert "user-test" not in json.dumps(usage_payload["requests"])
+        assert capabilities_response.status_code == 200
+        assert capabilities_response.json()["capabilities"] == [
+            "request",
+            "correlated",
+            "usage",
+            "stale",
+        ]
     finally:
         async with database.sessions() as session:
             await session.execute(

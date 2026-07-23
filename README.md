@@ -291,6 +291,9 @@ export NORTHGATE_INSPECT_OPERATOR_KEY=<operator key>
 uv run northgate-inspect run <run-id>
 uv run northgate-inspect request <request-id> --json
 uv run northgate-inspect stale --minimum-age 5m
+uv run northgate-inspect usage --metadata-key user_id --metadata-value <user-id> --group-by run_id
+uv run northgate-inspect recent --application dayboard --since 2h
+uv run northgate-inspect doctor
 ```
 
 也可以通过权限为 `0600` 的文件设置

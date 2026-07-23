@@ -85,6 +85,8 @@ The MCP server exposes only bounded, read-only tools:
 | `get_provider_attempts` | `request_id` | ordered retry/fallback attempts |
 | `find_stale_settlements` | bounded minimum age and limit | stale requests, attempts, leases, and protected/unprotected state |
 | `diagnose_prompt_cache` | correlation filter | cached tokens, eligible prompt tokens, missing-detail calls, and exact-cache distinction |
+| `inspect_usage_range` | metadata filter, optional group key, bounded range | grouped usage, cache lower bound, trust classes, and findings |
+| `list_recent_correlations` | application name/ID, group key, bounded age | recent groups through the shared usage schema |
 
 Do not create Dayboard-specific MCP tool names or schemas. `run_id` is one
 allowlisted correlation dimension, not a Northgate domain object.
@@ -118,9 +120,15 @@ reports:
 northgate-inspect run <correlation-value> [--metadata-key run_id] [--json]
 northgate-inspect request <request-id> [--json]
 northgate-inspect stale [--minimum-age 5m] [--limit 100] [--json]
+northgate-inspect usage --metadata-key <key> --metadata-value <value>
+                          [--group-by <key>] [--start <time> | --since <range>]
+                          [--end <time>] [--timezone <IANA zone>] [--limit 100] [--json]
+northgate-inspect recent --application <name-or-id> [--group-by run_id]
+                         [--since 2h] [--timezone UTC] [--limit 100] [--json]
+northgate-inspect doctor [--json]
 ```
 
-`run`, `request`, and `stale` are implemented. `--json` emits the REST response
+All commands above are implemented. `--json` emits the REST response
 without changing its versioned shape; human output is a compact summary. Exit
 codes are `0` for no findings, `2` for findings present, `3` for authorization
 failure, and `4` for configuration, transport, or service failure. The CLI uses
@@ -131,10 +139,17 @@ Configure it with `NORTHGATE_INSPECT_BASE_URL` and exactly one of
 files must be regular, no larger than 4 KiB, and inaccessible to group and other
 users. The raw key is never accepted as a command argument.
 
+`usage` and `recent` call the bounded `/api/v1/diagnostics/usage` service instead
+of aggregating independently. Returned filter and group dimensions include
+observed metadata trust classes. `doctor` calls the authenticated capabilities
+endpoint and reports credential source, reachability, authorization, and schema
+compatibility without printing credential material.
+
 ## Security and operational constraints
 
-- All diagnostic interfaces require a dedicated read-only operator capability.
-  Do not give the MCP process control-plane mutation credentials.
+- The MCP tool surface is read-only. The initial operator key is nevertheless an
+  organization-wide administrative credential until scoped capabilities exist;
+  isolate its file and process accordingly.
 - Read credentials from process configuration or a protected file. Never accept
   them as MCP tool arguments or return them in output.
 - Never return prompts, responses, tool payloads, authorization headers,
@@ -199,6 +214,9 @@ assuming every ledger record is complete.
 6. Completed on 2026-07-22: expose recent and correlated requests, attempts, settlement
    progress, and findings through the management console defined in
    [Operator console](console.md).
+7. Completed on 2026-07-23: add bounded time-range usage, grouping, recent
+   application correlations, explicit timezone parsing, compatibility doctor,
+   matching MCP tools, and protected client provisioning.
 
 Do not let MCP implementation delay the settlement fix. Do not make the MCP
 server query Northgate's database directly as a shortcut.

@@ -240,3 +240,15 @@ returns Dayboard to the single-tenant canary.
   page against the real read-only production control responses. Both configured
   Gateways loaded with no browser or schema errors; no production mutation was
   performed.
+
+### 2026-07-23: Bounded diagnostics usage workflows
+
+- Added authenticated diagnostics capabilities and bounded time-range usage APIs
+  with optional metadata grouping, trust classes, explicit truncation, cache
+  lower-bound semantics, retry/fallback counts, and joined request findings.
+- Added `northgate-inspect usage`, `recent`, and `doctor`, including explicit IANA
+  timezone handling and application name/ID resolution without product coupling.
+- Added MCP usage-range and recent-correlation tools over the same Operator API,
+  plus protected client provisioning from a retained raw operator key.
+- Verified focused REST/CLI/MCP tests and the real PostgreSQL/Redis diagnostics
+  integration path.

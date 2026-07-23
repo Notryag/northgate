@@ -46,9 +46,10 @@ Run the CLI through the repository environment:
 uv run northgate-inspect run <run-id>
 uv run northgate-inspect request <request-id>
 uv run northgate-inspect stale --minimum-age 5m --limit 100
+uv run northgate-inspect doctor
 ```
 
-`run` correlates requests by trusted `run_id` metadata by default. A different
+`run` correlates requests by allowlisted `run_id` metadata by default. A different
 allowlisted correlation dimension and a bounded time range can be selected:
 
 ```sh
@@ -58,6 +59,44 @@ uv run northgate-inspect run <correlation-value> \
   --end 2026-07-24T00:00:00Z \
   --limit 50
 ```
+
+Use `usage` to aggregate one metadata filter and optionally group it by another
+metadata dimension. The output reports the selected range, request and group
+counts, token and cache totals, outcome, model, latency, attempts, and findings:
+
+```sh
+uv run northgate-inspect usage \
+  --metadata-key user_id \
+  --metadata-value <trusted-user-id> \
+  --start '2026-07-23T09:00:00+08:00' \
+  --end now \
+  --group-by run_id
+```
+
+Relative ranges use an explicit timezone and never silently consume the host
+timezone:
+
+```sh
+uv run northgate-inspect usage \
+  --metadata-key user_id \
+  --metadata-value <trusted-user-id> \
+  --since today@09:00 \
+  --timezone Asia/Shanghai \
+  --group-by run_id
+```
+
+`recent` resolves a Northgate application-key name or ID and lists recent
+correlation groups. It does not resolve product usernames or application-domain
+objects:
+
+```sh
+uv run northgate-inspect recent --application dayboard --since 2h --group-by run_id
+```
+
+All aggregates cover at most 100 returned requests. When `has_more=true`, both
+human and JSON output state that totals and groups cover only the returned page.
+A cache percentage is labelled as a lower bound when provider cache detail is
+missing from any included request.
 
 Add `--json` to any command for the versioned machine-readable REST shape. CLI
 exit codes are suitable for scripts:
@@ -91,6 +130,8 @@ It exposes these bounded, read-only tools:
 | `get_provider_attempts` | Return the ordered retry and fallback attempts for one request |
 | `find_stale_settlements` | Find stale ledger records and concurrency leases |
 | `diagnose_prompt_cache` | Compare provider prompt-cache evidence for correlated requests |
+| `inspect_usage_range` | Aggregate a bounded metadata-filtered range with optional grouping |
+| `list_recent_correlations` | Resolve a Northgate application and list recent grouped correlations |
 
 The tools never accept credentials and never return prompts, responses, tool
 payloads, request bodies, or provider credentials.
@@ -158,6 +199,30 @@ command, arguments, and environment contract shown above when translating it.
 Streamable HTTP is intentionally unsupported until Northgate has an explicit
 OAuth or token-verification deployment contract.
 
+## Provision a production client
+
+The server stores only `NORTHGATE_OPERATOR_KEY_SHA256`; a digest cannot be used
+to reconstruct a CLI credential. Retain the one-time raw operator key in the
+deployment secret store. Provision a host client from a protected key file with:
+
+```sh
+scripts/provision-inspect-client.sh \
+  --base-url http://127.0.0.1:8082 \
+  --source-key-file /run/secrets/northgate_operator_key_source \
+  --config-dir /var/lib/northgate-inspect \
+  --expected-sha256 "$NORTHGATE_OPERATOR_KEY_SHA256"
+
+set -a
+source /var/lib/northgate-inspect/inspect.env
+set +a
+uv run northgate-inspect doctor
+```
+
+The script accepts no raw key argument, validates the source file, optionally
+verifies its digest, writes the copied key and environment file with mode `0600`,
+and refuses to overwrite an existing client unless `--force` is explicitly used
+for rotation. If the raw credential was not retained, rotate the operator key.
+
 ## Verification and troubleshooting
 
 First verify the Operator API and credential with the CLI:
@@ -167,7 +232,7 @@ uv run northgate-inspect stale --minimum-age 5m --limit 1 --json
 ```
 
 Then verify that the MCP client lists `northgate-diagnostics` and discovers the
-five tools above. Common failures are:
+seven tools above. Common failures are:
 
 | Symptom | Check |
 | --- | --- |

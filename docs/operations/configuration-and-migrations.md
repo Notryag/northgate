@@ -1,7 +1,7 @@
 # Configuration and migration policy
 
 Status: accepted and implemented  
-Last reviewed: 2026-07-17
+Last reviewed: 2026-07-23
 
 ## Configuration contract
 
@@ -25,6 +25,11 @@ settings; README sections describe behavior and safe defaults.
   regular `NORTHGATE_INSPECT_OPERATOR_KEY_FILE` with no group/other access; never
   pass it as a command argument. `northgate-mcp` consumes the same client
   settings and never accepts credentials as MCP tool arguments.
+- `scripts/provision-inspect-client.sh` copies a retained raw operator key from a
+  protected source file into an explicit client configuration directory, verifies
+  an optional SHA-256 digest, writes mode-`0600` key/environment files, and refuses
+  accidental overwrite. A server-side digest cannot reconstruct a lost raw key;
+  rotate the operator credential if the deployment secret was not retained.
 - Release notes must call out new required settings, default changes, and any
   setting that changes request or cost behavior.
 - `NORTHGATE_MAX_REQUEST_BODY_BYTES` bounds buffered proxy request bodies and
