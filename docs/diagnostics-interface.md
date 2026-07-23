@@ -1,11 +1,14 @@
 # Operator diagnostics interface
 
 Status: REST, CLI, MCP, and console request diagnostics implemented
-Last reviewed: 2026-07-22
+Last reviewed: 2026-07-23
 
 This document defines a read-only diagnostics surface for operators and coding
 agents. It builds on Northgate's existing analytics API and does not turn
 Northgate into an agent runtime or an MCP data-plane proxy.
+
+For executable CLI examples and MCP client registration, see
+[Operator CLI and MCP usage](operator-cli-and-mcp.md).
 
 ## Goal
 

@@ -1,7 +1,7 @@
 # Northgate documentation index
 
 Status: accepted documentation structure  
-Last reviewed: 2026-07-22
+Last reviewed: 2026-07-23
 
 This page is the canonical entry point for Northgate documentation. Read only
 the pages needed for the current task.
@@ -40,6 +40,7 @@ older revision.
 | Configure or migrate Northgate | [Configuration and migrations](operations/configuration-and-migrations.md) |
 | Back up or upgrade | [Backup and restore](operations/backup-and-restore.md), [Upgrades](operations/upgrades.md) |
 | Integrate Dayboard | [Integration boundaries](integration-boundaries.md), [API design](api-design.md) |
+| Use the diagnostics CLI or MCP server | [Operator CLI and MCP usage](operator-cli-and-mcp.md), [Operator diagnostics interface](diagnostics-interface.md) |
 | Add AI-assisted operator diagnostics | [Operator diagnostics interface](diagnostics-interface.md), [Known issues](known-issues.md) |
 | Change the operator console | [Operator console](console.md), [Current state](current-state.md), [API design](api-design.md) |
 | Integrate an existing system | [Integration guide](integration-guide.md), [API design](api-design.md) |
@@ -56,6 +57,8 @@ older revision.
 - [Integration boundaries](integration-boundaries.md): ownership split with Dayboard and `north`.
 - [Integration guide](integration-guide.md): compatibility checks, canary traffic, and rollback.
 - [Operator diagnostics interface](diagnostics-interface.md): implemented shared service, REST, CLI, and read-only MCP diagnostics contract.
+- [Operator CLI and MCP usage](operator-cli-and-mcp.md): installation,
+  authentication, command examples, MCP client registration, and troubleshooting.
 - [Operator console](console.md): accepted management information architecture,
   visual contract, frontend stack, and phased delivery order.
 - [Known issues and hardening work](known-issues.md): active gaps first, then incident history and closure criteria.

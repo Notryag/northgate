@@ -308,6 +308,8 @@ uv run northgate-mcp
 
 MCP 工具不接受或返回凭证。首版只启用 stdio transport；在配置 OAuth/token
 verification 之前不会开放 Streamable HTTP。
+CLI 参数、退出码、Codex 注册命令、通用 stdio 客户端配置和排错步骤见
+[Operator CLI and MCP usage](docs/operator-cli-and-mcp.md)。
 
 React 运维控制台地址：
 
@@ -382,6 +384,7 @@ NORTHGATE_APPLICATION_PROBE_CONTAINER=dayboard-api ./scripts/compose-upgrade.sh
 - [API 设计](docs/api-design.md)
 - [集成边界](docs/integration-boundaries.md)
 - [现有系统接入指南](docs/integration-guide.md)
+- [CLI 与 MCP 使用指南](docs/operator-cli-and-mcp.md)
 - [项目路线图](docs/roadmap.md)
 - [开发与验证流程](docs/development.md)
 - [架构决策](docs/decisions/README.md)
