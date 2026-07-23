@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -198,3 +199,20 @@ async def test_usage_and_recent_tools_return_shared_usage_schema(
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+def test_mcp_suppresses_http_query_logging() -> None:
+    httpx_logger = logging.getLogger("httpx")
+    httpcore_logger = logging.getLogger("httpcore")
+    previous = (httpx_logger.level, httpcore_logger.level)
+    try:
+        httpx_logger.setLevel(logging.INFO)
+        httpcore_logger.setLevel(logging.INFO)
+
+        mcp_server._configure_dependency_logging()
+
+        assert httpx_logger.level == logging.WARNING
+        assert httpcore_logger.level == logging.WARNING
+    finally:
+        httpx_logger.setLevel(previous[0])
+        httpcore_logger.setLevel(previous[1])

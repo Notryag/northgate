@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -24,6 +25,12 @@ _READ_ONLY = ToolAnnotations(
     openWorldHint=True,
 )
 _config: InspectConfig | None = None
+
+
+def _configure_dependency_logging() -> None:
+    # httpx INFO messages include full query strings and correlation values.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _execute(action: Callable[[OperatorDiagnosticsClient], dict[str, object]]) -> dict[str, object]:
@@ -204,6 +211,7 @@ def diagnose_prompt_cache(
 def main() -> None:
     global _config
     _config = InspectConfig.from_environment()
+    _configure_dependency_logging()
     server.run(transport="stdio")
 
 
