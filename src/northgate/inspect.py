@@ -373,6 +373,17 @@ def _human_request(payload: dict[str, object], output: TextIO) -> None:
         f"cached={request.get('cached_prompt_tokens')}",
         file=output,
     )
+    print(
+        f"Reservation: prompt={request.get('estimated_prompt_tokens')} "
+        f"output={request.get('reserved_output_tokens')} "
+        f"attempts={request.get('attempt_multiplier')} "
+        f"margin={request.get('reservation_margin_tokens')} "
+        f"reserved={request.get('reserved_total_tokens')} "
+        f"actual={request.get('actual_total_tokens')} "
+        f"released={request.get('released_tokens')} "
+        f"ratio={request.get('estimate_actual_ratio')}",
+        file=output,
+    )
     attempts = payload.get("attempts")
     settlement = payload.get("settlement")
     events = settlement.get("events") if isinstance(settlement, dict) else None
@@ -442,6 +453,14 @@ def _human_usage(payload: dict[str, object], output: TextIO, *, timezone: str) -
         f"Cached prompt: {aggregate.get('cached_prompt_tokens')} "
         f"({cache_display})  "
         f"Missing cache detail: {aggregate.get('cached_usage_missing_requests')}",
+        file=output,
+    )
+    print(
+        f"Reservation sample: requests={aggregate.get('reservation_sample_requests')} "
+        f"reserved={aggregate.get('reserved_total_tokens')} "
+        f"actual={aggregate.get('actual_total_tokens')} "
+        f"released={aggregate.get('released_tokens')} "
+        f"ratio={aggregate.get('estimate_actual_ratio')}",
         file=output,
     )
     if isinstance(groups, list) and groups:

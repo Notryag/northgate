@@ -65,6 +65,14 @@ def _request_payload() -> dict[str, object]:
             "completion_tokens": 2,
             "total_tokens": 5,
             "cached_prompt_tokens": 0,
+            "estimated_prompt_tokens": 4,
+            "reserved_output_tokens": 8,
+            "attempt_multiplier": 1,
+            "reservation_margin_tokens": 16,
+            "reserved_total_tokens": 28,
+            "actual_total_tokens": 5,
+            "released_tokens": 23,
+            "estimate_actual_ratio": 5.6,
         },
         "attempts": [{"attempt_index": 1}],
         "settlement": {"events": [{"status": "completed"}]},
@@ -180,6 +188,7 @@ def test_request_human_output_returns_healthy_exit_code() -> None:
     assert exit_code == EXIT_HEALTHY
     assert "Request: req_12345678" in output.getvalue()
     assert "Tokens: prompt=3 completion=2 total=5 cached=0" in output.getvalue()
+    assert "Reservation: prompt=4 output=8 attempts=1 margin=16" in output.getvalue()
     assert "Findings: none" in output.getvalue()
 
 

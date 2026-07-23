@@ -48,6 +48,11 @@ settings; README sections describe behavior and safe defaults.
 - `NORTHGATE_SETTLEMENT_COMPLETED_RETENTION_DAYS` defaults to 30 days and is used
   by `northgate-worker --cleanup-completed`. Cleanup deletes only completed
   events, in bounded batches; retryable and failed events are retained.
+- Token admission settings, their output-limit precedence, safety margin, and
+  aggregate diagnostic thresholds are defined in
+  [Token admission reservation](../token-reservation.md). Model defaults are a
+  JSON object such as `{"gpt-5.4-mini":2048}`. Route defaults are nullable and
+  take precedence over that mapping.
 
 The following material is not recoverable from PostgreSQL and must be retained
 in the deployment secret manager:
@@ -96,6 +101,11 @@ tenant aggregation; no historical trust value is inferred.
 Revision `0016` adds `schema_version: 1` to existing settlement payloads and a
 partial worker-queue index over recoverable events. New workers reject unsupported
 payload versions instead of interpreting them with the current schema.
+
+Revision `0017` adds nullable reservation components to request records and a
+nullable positive `default_max_output_tokens` to routes. Existing request rows
+retain only `estimated_tokens`; diagnostics treat it as the historical reserved
+total and do not backfill unknown components.
 
 Local downgrade from `0013` to `0012` requires removing all but one settlement
 event per request first. Production rollback remains backup restore plus the prior

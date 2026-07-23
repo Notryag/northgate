@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
     from northgate.db.database import Database
+    from northgate.token_reservation import TokenReservation
 
 
 class Metrics:
@@ -89,6 +90,25 @@ class Metrics:
             "northgate_provider_cost_microusd_total",
             "Calculated provider cost in millionths of a US dollar.",
             ("provider", "adapter"),
+            registry=self.registry,
+        )
+        self.token_reservation_tokens = Histogram(
+            "northgate_token_reservation_tokens",
+            "Token reservation components before provider forwarding.",
+            ("component", "estimator", "output_source"),
+            buckets=(16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576),
+            registry=self.registry,
+        )
+        self.token_reservation_actual_ratio = Histogram(
+            "northgate_token_reservation_actual_ratio",
+            "Reserved total tokens divided by provider-reported actual total tokens.",
+            buckets=(1, 1.25, 1.5, 2, 3, 5, 10, 25, 100),
+            registry=self.registry,
+        )
+        self.token_reservation_released = Histogram(
+            "northgate_token_reservation_released_tokens",
+            "Reserved tokens released when provider-reported actual usage settles.",
+            buckets=(0, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576),
             registry=self.registry,
         )
         self.cache_requests = Counter(
@@ -305,6 +325,26 @@ class Metrics:
             self.provider_cost_microusd.labels(provider=provider, adapter=adapter).inc(
                 cost_microusd
             )
+
+    def observe_token_reservation(self, reservation: "TokenReservation") -> None:
+        labels = {
+            "estimator": reservation.estimator,
+            "output_source": reservation.output_limit_source,
+        }
+        for component, value in (
+            ("prompt", reservation.estimated_prompt_tokens),
+            ("output", reservation.reserved_output_tokens),
+            ("margin", reservation.reservation_margin_tokens),
+            ("total", reservation.reserved_total_tokens),
+        ):
+            self.token_reservation_tokens.labels(component=component, **labels).observe(value)
+
+    def observe_token_settlement(self, reserved_tokens: int, actual_tokens: int | None) -> None:
+        if actual_tokens is None or actual_tokens < 0:
+            return
+        self.token_reservation_released.observe(max(0, reserved_tokens - actual_tokens))
+        if actual_tokens > 0:
+            self.token_reservation_actual_ratio.observe(reserved_tokens / actual_tokens)
 
 
 async def metrics_response(request: Request) -> Response:

@@ -456,6 +456,50 @@ async def usage_requests(
                     "http_status": record.http_status,
                     "error_code": record.error_code,
                     "estimated_tokens": record.estimated_tokens,
+                    "estimated_prompt_tokens": getattr(record, "estimated_prompt_tokens", None),
+                    "reserved_output_tokens": getattr(record, "reserved_output_tokens", None),
+                    "attempt_multiplier": getattr(record, "attempt_multiplier", None),
+                    "reservation_margin_tokens": getattr(record, "reservation_margin_tokens", None),
+                    "reserved_total_tokens": getattr(record, "reserved_total_tokens", None)
+                    or record.estimated_tokens,
+                    "actual_total_tokens": record.total_tokens,
+                    "released_tokens": (
+                        max(
+                            0,
+                            (
+                                getattr(record, "reserved_total_tokens", None)
+                                or record.estimated_tokens
+                            )
+                            - record.total_tokens,
+                        )
+                        if (
+                            getattr(record, "reserved_total_tokens", None)
+                            or record.estimated_tokens
+                        )
+                        is not None
+                        and record.total_tokens is not None
+                        else None
+                    ),
+                    "estimate_actual_ratio": (
+                        round(
+                            (
+                                getattr(record, "reserved_total_tokens", None)
+                                or record.estimated_tokens
+                            )
+                            / record.total_tokens,
+                            4,
+                        )
+                        if (
+                            getattr(record, "reserved_total_tokens", None)
+                            or record.estimated_tokens
+                        )
+                        is not None
+                        and record.total_tokens is not None
+                        and record.total_tokens > 0
+                        else None
+                    ),
+                    "token_estimator": getattr(record, "token_estimator", None),
+                    "output_limit_source": getattr(record, "output_limit_source", None),
                     "prompt_tokens": record.prompt_tokens,
                     "completion_tokens": record.completion_tokens,
                     "total_tokens": record.total_tokens,

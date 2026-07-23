@@ -19,6 +19,7 @@ dependencies = [
     "redis>=5.0.0,<7.0.0",
     "sqlalchemy[asyncio]>=2.0.0,<3.0.0",
     "structlog>=25.0.0,<26.0.0",
+    "tiktoken>=0.9,<1",
     "uvicorn[standard]>=0.35.0,<1.0.0",
 ]
 

@@ -38,6 +38,7 @@ const routeFormSchema = z.object({
   maxRetries: z.number().int().min(0).max(5),
   healthFailureThreshold: z.number().int().min(0).max(100),
   healthRecoverySeconds: z.number().int().min(1).max(3600),
+  defaultMaxOutputTokens: z.number().int().min(1).max(2_000_000).nullable(),
   enabled: z.boolean(),
   metadata: z.array(z.object({ key: z.string().max(64), value: z.string().max(256) })).max(16),
 }).superRefine((value, context) => {
@@ -58,6 +59,7 @@ const editRouteSchema = z.object({
   priority: z.number().int().min(0).max(10000),
   weight: z.number().int().min(1).max(10000),
   enabled: z.boolean(),
+  defaultMaxOutputTokens: z.number().int().min(1).max(2_000_000).nullable(),
 });
 type EditRouteForm = z.infer<typeof editRouteSchema>;
 
@@ -80,6 +82,7 @@ const routeDefaults: RouteForm = {
   maxRetries: 0,
   healthFailureThreshold: 0,
   healthRecoverySeconds: 30,
+  defaultMaxOutputTokens: null,
   enabled: true,
   metadata: [{ key: "", value: "" }],
 };
@@ -144,12 +147,13 @@ export function GatewaysPage() {
       health_failure_threshold: values.healthFailureThreshold,
       health_recovery_seconds: values.healthRecoverySeconds,
       health_failure_status_codes: [500, 502, 503, 504],
+      default_max_output_tokens: values.defaultMaxOutputTokens,
       match_metadata: Object.fromEntries(values.metadata.filter((item) => item.key && item.value).map((item) => [item.key, item.value])),
     }),
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["routes"] }); setRouteOpen(false); routeForm.reset(routeDefaults); },
   });
   const editRouteMutation = useMutation({
-    mutationFn: (values: EditRouteForm) => updateRoute(operatorKey, editingRoute!.id, values),
+    mutationFn: (values: EditRouteForm) => updateRoute(operatorKey, editingRoute!.id, { priority: values.priority, weight: values.weight, enabled: values.enabled, default_max_output_tokens: values.defaultMaxOutputTokens }),
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["routes"] }); setEditingRoute(null); },
   });
   const policyMutation = useMutation({
@@ -197,9 +201,10 @@ export function GatewaysPage() {
               { title: "Priority", dataIndex: "priority", align: "right", width: 80 },
               { title: "Weight", dataIndex: "weight", align: "right", width: 80 },
               { title: "Retries", dataIndex: "max_retries", align: "right", width: 75 },
+              { title: "Output reserve", dataIndex: "default_max_output_tokens", align: "right", width: 110, render: (value: number | null) => value == null ? "Model / global" : numberFormat.format(value) },
               { title: "Circuit", dataIndex: "health_failure_threshold", width: 110, render: (value: number, record: Route) => value ? `${value} / ${record.health_recovery_seconds}s` : "Disabled" },
               { title: "Status", dataIndex: "enabled", width: 95, render: (value: boolean) => <StatusTag value={value ? "ready" : "disabled"} /> },
-              { title: "", width: 48, render: (_: unknown, record: Route) => <Button type="text" icon={<Pencil size={14} />} aria-label={`Edit ${record.name}`} onClick={() => { editForm.reset({ priority: record.priority, weight: record.weight, enabled: record.enabled }); setEditingRoute(record); }} /> },
+              { title: "", width: 48, render: (_: unknown, record: Route) => <Button type="text" icon={<Pencil size={14} />} aria-label={`Edit ${record.name}`} onClick={() => { editForm.reset({ priority: record.priority, weight: record.weight, enabled: record.enabled, defaultMaxOutputTokens: record.default_max_output_tokens }); setEditingRoute(record); }} /> },
             ]}
             locale={{ emptyText: "No routes configured" }}
           />
@@ -235,6 +240,7 @@ export function GatewaysPage() {
           <NumberField control={routeForm.control} name="maxRetries" label="Max retries" min={0} max={5} />
           <NumberField control={routeForm.control} name="healthFailureThreshold" label="Circuit threshold" min={0} max={100} />
           <NumberField control={routeForm.control} name="healthRecoverySeconds" label="Recovery seconds" min={1} max={3600} />
+          <NullableNumberField control={routeForm.control} name="defaultMaxOutputTokens" label="Default max output" min={1} max={2_000_000} placeholder="Model / global" />
           <label><span>Enabled</span><Controller name="enabled" control={routeForm.control} render={({ field }) => <Switch checked={field.value} onChange={field.onChange} />} /></label>
           <div className="metadata-editor span-two"><span>Trusted metadata match</span>{metadataFields.fields.map((field, index) => <div className="metadata-row" key={field.id}><Controller name={`metadata.${index}.key`} control={routeForm.control} render={({ field: item }) => <Input {...item} placeholder="environment" />} /><Controller name={`metadata.${index}.value`} control={routeForm.control} render={({ field: item }) => <Input {...item} placeholder="production" />} /><Button type="text" icon={<Trash2 size={14} />} onClick={() => metadataFields.remove(index)} aria-label="Remove metadata condition" /></div>)}<Button type="dashed" icon={<Plus size={14} />} disabled={metadataFields.fields.length >= 16} onClick={() => metadataFields.append({ key: "", value: "" })}>Add condition</Button></div>
           {routeForm.formState.errors.metadata ? <Alert className="span-two" type="error" message="Invalid metadata conditions" /> : null}
@@ -246,6 +252,7 @@ export function GatewaysPage() {
         <form className="modal-form compact-form" onSubmit={(event) => void editForm.handleSubmit((values) => editRouteMutation.mutate(values))(event)}>
           <NumberField control={editForm.control} name="priority" label="Priority" min={0} max={10000} />
           <NumberField control={editForm.control} name="weight" label="Weight" min={1} max={10000} />
+          <NullableNumberField control={editForm.control} name="defaultMaxOutputTokens" label="Default max output" min={1} max={2_000_000} placeholder="Model / global" />
           <label><span>Enabled</span><Controller name="enabled" control={editForm.control} render={({ field }) => <Switch checked={field.value} onChange={field.onChange} />} /></label>
           <Button type="primary" htmlType="submit" icon={<Save size={15} />} loading={editRouteMutation.isPending}>Save route</Button>
         </form>
@@ -260,4 +267,8 @@ function NumberField<T extends RouteForm | EditRouteForm>({ control, name, label
 
 function PolicyNumber({ control, name, label, prefix, suffix, step = 1 }: { control: import("react-hook-form").Control<PolicyForm>; name: import("react-hook-form").Path<PolicyForm>; label: string; prefix?: string; suffix?: string; step?: number }) {
   return <label><span>{label}</span><Controller name={name} control={control} render={({ field }) => <InputNumber min={step} step={step} prefix={prefix} suffix={suffix} value={field.value as number | null} onChange={field.onChange} placeholder="Unlimited" />} /></label>;
+}
+
+function NullableNumberField<T extends RouteForm | EditRouteForm>({ control, name, label, min, max, placeholder }: { control: import("react-hook-form").Control<T>; name: import("react-hook-form").Path<T>; label: string; min: number; max: number; placeholder: string }) {
+  return <label><span>{label}</span><Controller name={name} control={control} render={({ field }) => <InputNumber min={min} max={max} value={field.value as number | null} onChange={field.onChange} placeholder={placeholder} />} /></label>;
 }

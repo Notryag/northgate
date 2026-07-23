@@ -116,6 +116,12 @@ class UsageRecorder:
         price_id: UUID | None,
         estimated_tokens: int,
         cache_status: str,
+        estimated_prompt_tokens: int | None = None,
+        reserved_output_tokens: int | None = None,
+        attempt_multiplier: int | None = None,
+        reservation_margin_tokens: int | None = None,
+        token_estimator: str | None = None,
+        output_limit_source: str | None = None,
     ) -> None:
         async with self.database.sessions() as session:
             session.add(
@@ -130,6 +136,13 @@ class UsageRecorder:
                     request_metadata_trust=request_metadata_trust or None,
                     price_id=price_id,
                     estimated_tokens=estimated_tokens,
+                    estimated_prompt_tokens=estimated_prompt_tokens,
+                    reserved_output_tokens=reserved_output_tokens,
+                    attempt_multiplier=attempt_multiplier,
+                    reservation_margin_tokens=reservation_margin_tokens,
+                    reserved_total_tokens=estimated_tokens,
+                    token_estimator=token_estimator,
+                    output_limit_source=output_limit_source,
                     cache_status=cache_status,
                     outcome="started",
                 )
@@ -153,6 +166,12 @@ class UsageRecorder:
         cache_status: str,
         error_code: str,
         status_code: int,
+        estimated_prompt_tokens: int | None = None,
+        reserved_output_tokens: int | None = None,
+        attempt_multiplier: int | None = None,
+        reservation_margin_tokens: int | None = None,
+        token_estimator: str | None = None,
+        output_limit_source: str | None = None,
     ) -> None:
         async with self.database.sessions() as session:
             session.add(
@@ -167,6 +186,13 @@ class UsageRecorder:
                     request_metadata_trust=request_metadata_trust or None,
                     price_id=price_id,
                     estimated_tokens=estimated_tokens,
+                    estimated_prompt_tokens=estimated_prompt_tokens,
+                    reserved_output_tokens=reserved_output_tokens,
+                    attempt_multiplier=attempt_multiplier,
+                    reservation_margin_tokens=reservation_margin_tokens,
+                    reserved_total_tokens=estimated_tokens,
+                    token_estimator=token_estimator,
+                    output_limit_source=output_limit_source,
                     cache_status=cache_status,
                     error_code=error_code,
                     outcome="policy_rejected",

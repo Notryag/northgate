@@ -88,6 +88,16 @@ export const requestRecordSchema = z.object({
   http_status: nullableNumber,
   error_code: nullableString,
   estimated_tokens: z.number(),
+  estimated_prompt_tokens: nullableNumber,
+  reserved_output_tokens: nullableNumber,
+  attempt_multiplier: nullableNumber,
+  reservation_margin_tokens: nullableNumber,
+  reserved_total_tokens: nullableNumber,
+  actual_total_tokens: nullableNumber,
+  released_tokens: nullableNumber,
+  estimate_actual_ratio: nullableNumber,
+  token_estimator: nullableString,
+  output_limit_source: nullableString,
   prompt_tokens: nullableNumber,
   completion_tokens: nullableNumber,
   total_tokens: nullableNumber,
@@ -198,6 +208,7 @@ const routeSchema = z.object({
   health_failure_threshold: z.number(),
   health_recovery_seconds: z.number(),
   health_failure_status_codes: z.array(z.number()),
+  default_max_output_tokens: nullableNumber,
 });
 
 const policySchema = z.object({
@@ -250,6 +261,7 @@ export interface RouteCreateInput {
   health_failure_threshold: number;
   health_recovery_seconds: number;
   health_failure_status_codes: number[];
+  default_max_output_tokens: number | null;
 }
 
 export interface PolicyInput {
@@ -380,6 +392,7 @@ export async function createRoute(operatorKey: string, input: RouteCreateInput) 
     weight: true,
     match_metadata: true,
     enabled: true,
+    default_max_output_tokens: true,
   }), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -390,7 +403,7 @@ export async function createRoute(operatorKey: string, input: RouteCreateInput) 
 export async function updateRoute(
   operatorKey: string,
   routeId: string,
-  input: { priority?: number; weight?: number; enabled?: boolean },
+  input: { priority?: number; weight?: number; enabled?: boolean; default_max_output_tokens?: number | null },
 ) {
   return request(`/api/v1/routes/${encodeURIComponent(routeId)}`, operatorKey, routeSchema.pick({
     id: true,
@@ -398,6 +411,7 @@ export async function updateRoute(
     priority: true,
     weight: true,
     enabled: true,
+    default_max_output_tokens: true,
   }), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },

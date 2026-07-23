@@ -141,6 +141,7 @@ class RouteCreate(NamedResourceCreate):
     health_failure_status_codes: list[int] = Field(
         default_factory=lambda: list(_HEALTH_STATUS_CODES), max_length=16
     )
+    default_max_output_tokens: int | None = Field(default=None, ge=1, le=2_000_000)
 
     @field_validator("match_metadata")
     @classmethod
@@ -164,6 +165,7 @@ class RouteUpdate(BaseModel):
     priority: int | None = Field(default=None, ge=0, le=10000)
     weight: int | None = Field(default=None, ge=1, le=10000)
     enabled: bool | None = None
+    default_max_output_tokens: int | None = Field(default=None, ge=1, le=2_000_000)
 
 
 class GatewayPolicyReplace(BaseModel):
@@ -542,6 +544,7 @@ async def list_routes(request: Request, gateway_id: UUID | None = None) -> Respo
                 "health_failure_threshold": item.health_failure_threshold,
                 "health_recovery_seconds": item.health_recovery_seconds,
                 "health_failure_status_codes": item.health_failure_status_codes,
+                "default_max_output_tokens": item.default_max_output_tokens,
             }
             for item in resources
         ]
@@ -591,6 +594,7 @@ async def create_route(request: Request, payload: RouteCreate) -> Response:
             "weight": resource.weight,
             "match_metadata": resource.match_metadata,
             "enabled": resource.enabled,
+            "default_max_output_tokens": resource.default_max_output_tokens,
         },
         201,
     )
@@ -603,6 +607,8 @@ async def update_route(request: Request, route_id: UUID, payload: RouteUpdate) -
     database = _database(request)
     assert database is not None
     changes = payload.model_dump(exclude_none=True)
+    if "default_max_output_tokens" in payload.model_fields_set:
+        changes["default_max_output_tokens"] = payload.default_max_output_tokens
     if not changes:
         return _error("EMPTY_UPDATE", "At least one route field is required", 400)
     async with database.sessions() as session:
@@ -619,6 +625,7 @@ async def update_route(request: Request, route_id: UUID, payload: RouteUpdate) -
             "priority": resource.priority,
             "weight": resource.weight,
             "enabled": resource.enabled,
+            "default_max_output_tokens": resource.default_max_output_tokens,
         }
     )
 

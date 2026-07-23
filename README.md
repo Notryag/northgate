@@ -134,6 +134,9 @@ Authorization: Bearer <operator key>
 
 策略接口使用完整替换：请求速率、并发、每日 token、日/月预算和精确缓存 TTL
 都必须提供，正整数表示启用，`null` 表示关闭。数据库路由会在后续请求中读取新策略。
+Route 可通过 `default_max_output_tokens` 配置默认输出预留；请求显式上限、Route、
+模型映射和全局默认值依次覆盖。完整估算公式、兼容字段和诊断指标见
+[Token admission reservation](docs/token-reservation.md)。
 
 切流前可以运行协议兼容性检查：
 

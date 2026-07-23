@@ -1,7 +1,7 @@
 # Operator console
 
 Status: phase 2 implemented
-Last reviewed: 2026-07-22
+Last reviewed: 2026-07-23
 
 The Northgate console is an operator workspace for configuration, usage, and
 incident diagnosis. It is not a marketing site and must remain outside the data
@@ -27,6 +27,11 @@ Phase 2 implements Gateway selection and creation, Route creation and bounded
 traffic-field updates, trusted metadata match configuration, and Gateway Policy
 replacement. Applications, Provider credential writes, and Operations remain in
 the ordered backlog.
+
+Gateway route create/edit forms also configure the nullable default output token
+reservation. Request detail displays the prompt estimate, output reserve, attempt
+multiplier, margin, total reserve, actual/released values, ratio, estimator, and
+output-limit source. Missing provider usage remains visibly unknown.
 
 The implemented request workspace lists up to 100 recent records without
 requiring a correlation filter, supports paired metadata filtering, opens a

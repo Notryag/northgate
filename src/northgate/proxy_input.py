@@ -1,10 +1,8 @@
 import json
-import math
 from dataclasses import dataclass
 
 from fastapi import Request
 
-from northgate.config import Settings
 from northgate.routing import ResolvedRoute
 
 _MAX_METADATA_BYTES = 8 * 1024
@@ -91,20 +89,3 @@ def request_model(body: bytes) -> str | None:
         return None
     model = payload.get("model")
     return model if isinstance(model, str) else None
-
-
-def estimated_tokens(body: bytes, settings: Settings) -> tuple[int, int]:
-    prompt_estimate = math.ceil(len(body) / 3)
-    try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return prompt_estimate, settings.policy_default_max_output_tokens
-    configured_max = payload.get("max_completion_tokens", payload.get("max_tokens"))
-    output_estimate = (
-        configured_max
-        if isinstance(configured_max, int)
-        and not isinstance(configured_max, bool)
-        and configured_max > 0
-        else settings.policy_default_max_output_tokens
-    )
-    return prompt_estimate, output_estimate

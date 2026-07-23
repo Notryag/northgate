@@ -38,6 +38,15 @@ export function RequestDetailPage() {
                 <Descriptions.Item label="Model">{record.model ?? "-"}</Descriptions.Item>
                 <Descriptions.Item label="Provider"><span className="mono">{record.provider}</span></Descriptions.Item>
                 <Descriptions.Item label="Tokens">{record.total_tokens == null ? "Unknown" : numberFormat.format(record.total_tokens)}</Descriptions.Item>
+                <Descriptions.Item label="Prompt estimate">{record.estimated_prompt_tokens == null ? "Unknown" : numberFormat.format(record.estimated_prompt_tokens)}</Descriptions.Item>
+                <Descriptions.Item label="Output reserve">{record.reserved_output_tokens == null ? "Unknown" : numberFormat.format(record.reserved_output_tokens)}</Descriptions.Item>
+                <Descriptions.Item label="Attempt multiplier">{record.attempt_multiplier == null ? "Unknown" : `${record.attempt_multiplier}x`}</Descriptions.Item>
+                <Descriptions.Item label="Reservation margin">{record.reservation_margin_tokens == null ? "Unknown" : numberFormat.format(record.reservation_margin_tokens)}</Descriptions.Item>
+                <Descriptions.Item label="Reserved total">{record.reserved_total_tokens == null ? "Unknown" : numberFormat.format(record.reserved_total_tokens)}</Descriptions.Item>
+                <Descriptions.Item label="Released tokens">{record.released_tokens == null ? "Unknown" : numberFormat.format(record.released_tokens)}</Descriptions.Item>
+                <Descriptions.Item label="Estimate / actual">{record.estimate_actual_ratio == null ? "Unknown" : `${record.estimate_actual_ratio.toFixed(2)}x`}</Descriptions.Item>
+                <Descriptions.Item label="Estimator"><span className="mono">{record.token_estimator ?? "Unknown"}</span></Descriptions.Item>
+                <Descriptions.Item label="Output source">{record.output_limit_source ?? "Unknown"}</Descriptions.Item>
                 <Descriptions.Item label="Cached prompt">{record.cached_prompt_tokens == null ? "Unknown" : numberFormat.format(record.cached_prompt_tokens)}</Descriptions.Item>
                 <Descriptions.Item label="Cost">{cost(record.cost_microusd)}</Descriptions.Item>
                 <Descriptions.Item label="Latency">{duration(record.latency_ms)}</Descriptions.Item>

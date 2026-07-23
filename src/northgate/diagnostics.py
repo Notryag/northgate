@@ -42,6 +42,10 @@ def _finding(
 
 
 def _request_fields(record: RequestRecord) -> dict[str, object]:
+    reserved_total = getattr(record, "reserved_total_tokens", None)
+    if reserved_total is None:
+        reserved_total = record.estimated_tokens
+    actual_total = record.total_tokens
     return {
         "request_id": record.request_id,
         "model": record.model,
@@ -50,6 +54,24 @@ def _request_fields(record: RequestRecord) -> dict[str, object]:
         "http_status": record.http_status,
         "error_code": record.error_code,
         "estimated_tokens": record.estimated_tokens,
+        "estimated_prompt_tokens": getattr(record, "estimated_prompt_tokens", None),
+        "reserved_output_tokens": getattr(record, "reserved_output_tokens", None),
+        "attempt_multiplier": getattr(record, "attempt_multiplier", None),
+        "reservation_margin_tokens": getattr(record, "reservation_margin_tokens", None),
+        "reserved_total_tokens": reserved_total,
+        "actual_total_tokens": actual_total,
+        "released_tokens": (
+            max(0, reserved_total - actual_total)
+            if reserved_total is not None and actual_total is not None
+            else None
+        ),
+        "estimate_actual_ratio": (
+            round(reserved_total / actual_total, 4)
+            if reserved_total is not None and actual_total is not None and actual_total > 0
+            else None
+        ),
+        "token_estimator": getattr(record, "token_estimator", None),
+        "output_limit_source": getattr(record, "output_limit_source", None),
         "prompt_tokens": record.prompt_tokens,
         "completion_tokens": record.completion_tokens,
         "total_tokens": record.total_tokens,
@@ -278,6 +300,8 @@ def build_usage_diagnostic(
     start: datetime,
     end: datetime,
     has_more: bool,
+    excessive_ratio_threshold: float = 3.0,
+    excessive_min_sample_size: int = 10,
 ) -> dict[str, object]:
     result = build_correlated_diagnostic(
         diagnostics,
@@ -292,47 +316,94 @@ def build_usage_diagnostic(
         {value for value in filter_trust_values if value is not None}
     )
     result["group_by"] = group_by
-    if group_by is None:
-        result["groups"] = []
-        return result
-
-    grouped: dict[str | None, list[tuple[dict[str, object], str | None]]] = defaultdict(list)
-    for diagnostic, (value, trust) in zip(diagnostics, group_values, strict=True):
-        grouped[value].append((diagnostic, trust))
-
     groups: list[dict[str, object]] = []
-    for value, items in grouped.items():
-        group_diagnostics = [item[0] for item in items]
-        aggregate = build_correlated_diagnostic(
-            group_diagnostics,
-            metadata_key=metadata_key,
-            metadata_value=metadata_value,
-            start=start,
-            end=end,
-            has_more=False,
-        )
-        groups.append(
-            {
-                "metadata_value": value,
-                "metadata_trust": sorted({trust for _, trust in items if trust is not None}),
-                "aggregate": aggregate["aggregate"],
-                "finding_counts": aggregate["finding_counts"],
-                "latest_started_at": max(
-                    str(item["request"]["started_at"])
-                    for item in group_diagnostics
-                    if isinstance(item.get("request"), dict)
-                ),
-            }
-        )
+    if group_by is not None:
+        grouped: dict[str | None, list[tuple[dict[str, object], str | None]]] = defaultdict(list)
+        for diagnostic, (value, trust) in zip(diagnostics, group_values, strict=True):
+            grouped[value].append((diagnostic, trust))
+        for value, items in grouped.items():
+            group_diagnostics = [item[0] for item in items]
+            aggregate = build_correlated_diagnostic(
+                group_diagnostics,
+                metadata_key=metadata_key,
+                metadata_value=metadata_value,
+                start=start,
+                end=end,
+                has_more=False,
+            )
+            groups.append(
+                {
+                    "metadata_value": value,
+                    "metadata_trust": sorted({trust for _, trust in items if trust is not None}),
+                    "aggregate": aggregate["aggregate"],
+                    "finding_counts": aggregate["finding_counts"],
+                    "latest_started_at": max(
+                        str(item["request"]["started_at"])
+                        for item in group_diagnostics
+                        if isinstance(item.get("request"), dict)
+                    ),
+                }
+            )
     groups.sort(key=lambda item: str(item["latest_started_at"]), reverse=True)
     result["groups"] = groups
+    requests = [item.get("request") for item in diagnostics]
+    ratio_sample = [
+        item
+        for item in requests
+        if isinstance(item, dict)
+        and isinstance(item.get("reserved_total_tokens"), int)
+        and isinstance(item.get("actual_total_tokens"), int)
+        and item["actual_total_tokens"] > 0
+    ]
+    reserved_total = sum(int(item["reserved_total_tokens"]) for item in ratio_sample)
+    actual_total = sum(int(item["actual_total_tokens"]) for item in ratio_sample)
+    aggregate_ratio = round(reserved_total / actual_total, 4) if actual_total else None
+    aggregate = result.get("aggregate")
+    if isinstance(aggregate, dict):
+        aggregate["reservation_sample_requests"] = len(ratio_sample)
+        aggregate["reserved_total_tokens"] = reserved_total
+        aggregate["actual_total_tokens"] = actual_total
+        aggregate["released_tokens"] = max(0, reserved_total - actual_total)
+        aggregate["estimate_actual_ratio"] = aggregate_ratio
+    if (
+        len(ratio_sample) >= excessive_min_sample_size
+        and aggregate_ratio is not None
+        and aggregate_ratio >= excessive_ratio_threshold
+    ):
+        finding = _finding(
+            "EXCESSIVE_TOKEN_RESERVATION",
+            "warning",
+            "aggregate",
+            {
+                "sample_requests": len(ratio_sample),
+                "reserved_total_tokens": reserved_total,
+                "actual_total_tokens": actual_total,
+                "estimate_actual_ratio": aggregate_ratio,
+                "threshold": excessive_ratio_threshold,
+            },
+        )
+        findings = result.get("findings")
+        if isinstance(findings, list):
+            findings.append(finding)
+        finding_counts = result.get("finding_counts")
+        if isinstance(finding_counts, dict):
+            finding_counts["EXCESSIVE_TOKEN_RESERVATION"] = 1
     return result
 
 
 class DiagnosticsService:
-    def __init__(self, database: Database, *, settlement_expected: bool) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        settlement_expected: bool,
+        excessive_ratio_threshold: float = 3.0,
+        excessive_min_sample_size: int = 10,
+    ) -> None:
         self.database = database
         self.settlement_expected = settlement_expected
+        self.excessive_ratio_threshold = excessive_ratio_threshold
+        self.excessive_min_sample_size = excessive_min_sample_size
 
     async def inspect_request(self, request_id: str) -> dict[str, object] | None:
         async with self.database.sessions() as session:
@@ -510,6 +581,8 @@ class DiagnosticsService:
             start=start,
             end=end,
             has_more=has_more,
+            excessive_ratio_threshold=self.excessive_ratio_threshold,
+            excessive_min_sample_size=self.excessive_min_sample_size,
         )
 
     async def inspect_stale(
@@ -693,6 +766,16 @@ def _database(request: Request) -> Database | None:
     return request.app.state.database
 
 
+def _service(request: Request, database: Database) -> DiagnosticsService:
+    settings = request.app.state.settings
+    return DiagnosticsService(
+        database,
+        settlement_expected=settings.settlement_outbox_enabled,
+        excessive_ratio_threshold=settings.policy_estimate_excess_ratio_threshold,
+        excessive_min_sample_size=settings.policy_estimate_excess_min_sample_size,
+    )
+
+
 def _range(start: datetime | None, end: datetime | None) -> tuple[datetime, datetime] | None:
     resolved_end = end or datetime.now(UTC)
     resolved_start = start or resolved_end - timedelta(hours=24)
@@ -718,10 +801,7 @@ async def diagnostics_request(request: Request, request_id: str) -> Response:
             {"error": {"code": "DIAGNOSTICS_UNAVAILABLE", "message": "Diagnostics unavailable"}},
             status_code=503,
         )
-    result = await DiagnosticsService(
-        database,
-        settlement_expected=request.app.state.settings.settlement_outbox_enabled,
-    ).inspect_request(request_id)
+    result = await _service(request, database).inspect_request(request_id)
     if result is None:
         return JSONResponse(
             {"error": {"code": "REQUEST_NOT_FOUND", "message": "Request not found"}},
@@ -759,10 +839,7 @@ async def diagnostics_correlated(
             status_code=503,
         )
     resolved_start, resolved_end = selected_range
-    result = await DiagnosticsService(
-        database,
-        settlement_expected=request.app.state.settings.settlement_outbox_enabled,
-    ).inspect_correlated(
+    result = await _service(request, database).inspect_correlated(
         metadata_key=metadata_key,
         metadata_value=metadata_value,
         start=resolved_start,
@@ -806,10 +883,7 @@ async def diagnostics_usage(
             status_code=503,
         )
     resolved_start, resolved_end = selected_range
-    result = await DiagnosticsService(
-        database,
-        settlement_expected=request.app.state.settings.settlement_outbox_enabled,
-    ).inspect_usage(
+    result = await _service(request, database).inspect_usage(
         metadata_key=metadata_key,
         metadata_value=metadata_value,
         group_by=group_by,
@@ -848,10 +922,7 @@ async def diagnostics_stale(
             status_code=503,
         )
     try:
-        result = await DiagnosticsService(
-            database,
-            settlement_expected=request.app.state.settings.settlement_outbox_enabled,
-        ).inspect_stale(
+        result = await _service(request, database).inspect_stale(
             redis=request.app.state.redis,
             minimum_age_seconds=minimum_age_seconds,
             limit=limit,

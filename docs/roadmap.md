@@ -77,6 +77,10 @@ Verification:
 - Parallel requests cannot exceed configured request or concurrency admission bounds.
 - Token and spend reservations settle exactly once to provider-reported usage.
 - Analytics summary totals reconcile with the underlying request records.
+- Token admission is componentized and observable: model-aware prompt estimates,
+  explicit unknown-model fallback, request/route/model/global output defaults,
+  retry/fallback multiplier, margin, released tokens, and aggregate calibration
+  findings are shared by REST, CLI, MCP, metrics, and Console.
 
 Deliverables:
 

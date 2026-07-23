@@ -82,7 +82,13 @@ class ProviderCredential(TimestampMixin, Base):
 
 class Route(TimestampMixin, Base):
     __tablename__ = "routes"
-    __table_args__ = (CheckConstraint("weight > 0", name="ck_routes_weight_positive"),)
+    __table_args__ = (
+        CheckConstraint("weight > 0", name="ck_routes_weight_positive"),
+        CheckConstraint(
+            "default_max_output_tokens IS NULL OR default_max_output_tokens > 0",
+            name="ck_routes_default_max_output_tokens_positive",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     gateway_id: Mapped[UUID] = mapped_column(
@@ -105,6 +111,7 @@ class Route(TimestampMixin, Base):
     health_failure_status_codes: Mapped[list[int]] = mapped_column(
         JSON, default=lambda: [500, 502, 503, 504]
     )
+    default_max_output_tokens: Mapped[int | None] = mapped_column(Integer)
 
     provider_credential: Mapped[ProviderCredential] = relationship(lazy="joined")
 
@@ -169,6 +176,13 @@ class RequestRecord(Base):
     total_tokens: Mapped[int | None] = mapped_column(Integer)
     cached_prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     estimated_tokens: Mapped[int | None] = mapped_column(Integer)
+    estimated_prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    reserved_output_tokens: Mapped[int | None] = mapped_column(Integer)
+    attempt_multiplier: Mapped[int | None] = mapped_column(Integer)
+    reservation_margin_tokens: Mapped[int | None] = mapped_column(Integer)
+    reserved_total_tokens: Mapped[int | None] = mapped_column(Integer)
+    token_estimator: Mapped[str | None] = mapped_column(String(80))
+    output_limit_source: Mapped[str | None] = mapped_column(String(20))
     cache_status: Mapped[str | None] = mapped_column(String(20))
     error_code: Mapped[str | None] = mapped_column(String(80))
     latency_ms: Mapped[int | None] = mapped_column(Integer)

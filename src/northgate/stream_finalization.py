@@ -55,6 +55,7 @@ class StreamFinalization:
     cache_ttl_seconds: int | None
     metrics: Metrics | None
     settlement_coordinator: SettlementCoordinator | None
+    reserved_tokens: int
 
     async def finish(
         self,
@@ -78,6 +79,11 @@ class StreamFinalization:
         self.totals.add(usage, cost_microusd)
         aggregate_usage = self.totals.usage()
         aggregate_cost = self.totals.cost_microusd if self.totals.has_cost else None
+        if self.metrics is not None:
+            self.metrics.observe_token_settlement(
+                self.reserved_tokens,
+                aggregate_usage.total_tokens,
+            )
         event_id: UUID | None = None
         if self.settlement_coordinator is not None and self.recorder is not None:
             payload: dict[str, object] = {
@@ -285,6 +291,7 @@ def stream_response_body(
     cache_max_entry_bytes: int,
     metrics: Metrics | None,
     settlement_coordinator: SettlementCoordinator | None,
+    reserved_tokens: int,
 ) -> AsyncIterator[bytes]:
     finalization = StreamFinalization(
         response=response,
@@ -306,6 +313,7 @@ def stream_response_body(
         cache_ttl_seconds=cache_ttl_seconds,
         metrics=metrics,
         settlement_coordinator=settlement_coordinator,
+        reserved_tokens=reserved_tokens,
     )
     return relay_response_body(
         response,

@@ -34,9 +34,6 @@ from northgate.proxy_input import (
     read_proxy_request_input,
 )
 from northgate.proxy_input import (
-    estimated_tokens as estimate_request_tokens,
-)
-from northgate.proxy_input import (
     request_metadata as parse_request_metadata,
 )
 from northgate.proxy_settlement import (
@@ -74,6 +71,7 @@ from northgate.routing import (
     RouteUnavailableError,
 )
 from northgate.stream_finalization import stream_response_body as _response_body
+from northgate.token_reservation import estimate_token_reservation
 from northgate.tracing import Tracing, add_span_event
 from northgate.usage import (
     DuplicateRequestError,
@@ -463,10 +461,28 @@ async def proxy_chat_completions(
             retryable=False,
         )
 
-    estimated_input_tokens, estimated_output_tokens = estimate_request_tokens(body, settings)
     possible_attempts = sum(candidate.max_retries + 1 for candidate in routes)
+    reservation = estimate_token_reservation(
+        body,
+        model=model,
+        route_default_output_tokens=route.default_max_output_tokens,
+        model_output_defaults=settings.policy_model_max_output_tokens,
+        global_default_output_tokens=settings.policy_default_max_output_tokens,
+        margin_percent=settings.policy_prompt_margin_percent,
+        attempt_multiplier=possible_attempts,
+    )
+    if metrics is not None:
+        metrics.observe_token_reservation(reservation)
+    margin_per_attempt = reservation.reservation_margin_tokens // possible_attempts
     estimated_cost_microusd = sum(
-        (price.cost(estimated_input_tokens, estimated_output_tokens) if price is not None else 0)
+        (
+            price.cost(
+                reservation.estimated_prompt_tokens + margin_per_attempt,
+                reservation.reserved_output_tokens,
+            )
+            if price is not None
+            else 0
+        )
         * (candidate.max_retries + 1)
         for candidate, price in zip(routes, prices, strict=True)
     )
@@ -481,14 +497,11 @@ async def proxy_chat_completions(
                 retryable=True,
             )
         try:
-            estimated_tokens = (
-                estimated_input_tokens + estimated_output_tokens
-            ) * possible_attempts
             policy_lease = await policy_engine.admit(
                 gateway_key=str(route.gateway_id or gateway_slug),
                 request_id=request_id,
                 limits=route.policy,
-                estimated_tokens=estimated_tokens,
+                estimated_tokens=reservation.reserved_total_tokens,
                 estimated_cost_microusd=estimated_cost_microusd,
             )
         except PolicyRejectedError as exc:
@@ -501,7 +514,13 @@ async def proxy_chat_completions(
                         request_metadata=ledger_metadata,
                         request_metadata_trust=ledger_metadata_trust,
                         price_id=prices[0].price_id if prices[0] is not None else None,
-                        estimated_tokens=estimated_tokens,
+                        estimated_tokens=reservation.reserved_total_tokens,
+                        estimated_prompt_tokens=reservation.estimated_prompt_tokens,
+                        reserved_output_tokens=reservation.reserved_output_tokens,
+                        attempt_multiplier=reservation.attempt_multiplier,
+                        reservation_margin_tokens=reservation.reservation_margin_tokens,
+                        token_estimator=reservation.estimator,
+                        output_limit_source=reservation.output_limit_source,
                         cache_status=cache_result,
                         error_code=exc.code,
                         status_code=429,
@@ -540,8 +559,13 @@ async def proxy_chat_completions(
                 request_metadata=ledger_metadata,
                 request_metadata_trust=ledger_metadata_trust,
                 price_id=price.price_id if price is not None else None,
-                estimated_tokens=(estimated_input_tokens + estimated_output_tokens)
-                * possible_attempts,
+                estimated_tokens=reservation.reserved_total_tokens,
+                estimated_prompt_tokens=reservation.estimated_prompt_tokens,
+                reserved_output_tokens=reservation.reserved_output_tokens,
+                attempt_multiplier=reservation.attempt_multiplier,
+                reservation_margin_tokens=reservation.reservation_margin_tokens,
+                token_estimator=reservation.estimator,
+                output_limit_source=reservation.output_limit_source,
                 cache_status=cache_result,
             )
         except DuplicateRequestError:
@@ -645,6 +669,7 @@ async def proxy_chat_completions(
                         price_id=(
                             candidate_price.price_id if candidate_price is not None else None
                         ),
+                        reserved_tokens=reservation.reserved_total_tokens,
                     )
                     if not durable_health_settlement:
                         await _settle_safely(
@@ -739,6 +764,7 @@ async def proxy_chat_completions(
                     first_token_ms=None,
                     final_route=candidate,
                     price_id=candidate_price.price_id if candidate_price is not None else None,
+                    reserved_tokens=reservation.reserved_total_tokens,
                 )
                 if not durable_attempt_start_settlement:
                     await _settle_safely(
@@ -931,6 +957,7 @@ async def proxy_chat_completions(
                         cache_max_entry_bytes=settings.cache_max_entry_bytes,
                         metrics=metrics,
                         settlement_coordinator=request.app.state.settlement_coordinator,
+                        reserved_tokens=reservation.reserved_total_tokens,
                     ),
                     status_code=response.status_code,
                     headers=_downstream_headers(
@@ -980,6 +1007,7 @@ async def proxy_chat_completions(
             first_token_ms=None,
             final_route=last_route,
             price_id=last_price.price_id if last_price is not None else None,
+            reserved_tokens=reservation.reserved_total_tokens,
         )
         if not durable_failure_settlement:
             await _settle_safely(

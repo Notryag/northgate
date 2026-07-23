@@ -232,3 +232,67 @@ def test_usage_diagnostic_groups_values_and_marks_incomplete_cache_ratio() -> No
         ("fixed",),
         ("untrusted",),
     }
+
+
+def test_usage_diagnostic_flags_only_material_aggregate_over_reservation() -> None:
+    diagnostics = []
+    for index in range(10):
+        record = _request(
+            request_id=f"req-ratio-{index}",
+            outcome="succeeded",
+            total_tokens=100,
+            cached_prompt_tokens=0,
+            metadata_trust={"user_id": "fixed"},
+        )
+        record.estimated_tokens = 500
+        record.reserved_total_tokens = 500
+        record.estimated_prompt_tokens = 80
+        record.reserved_output_tokens = 256
+        record.attempt_multiplier = 1
+        record.reservation_margin_tokens = 164
+        record.token_estimator = "tiktoken:o200k_base"
+        record.output_limit_source = "model"
+        diagnostics.append(
+            build_request_diagnostic(
+                record,
+                [_attempt(request_id=record.request_id, outcome="succeeded", total_tokens=100)],
+                [_event(record.request_id)],
+                settlement_expected=True,
+            )
+        )
+    now = datetime.now(UTC)
+
+    result = build_usage_diagnostic(
+        diagnostics,
+        metadata_key="user_id",
+        metadata_value="user-test",
+        group_by=None,
+        group_values=[(None, None)] * 10,
+        filter_trust_values=["fixed"] * 10,
+        start=now,
+        end=now,
+        has_more=False,
+        excessive_ratio_threshold=3.0,
+        excessive_min_sample_size=10,
+    )
+    single = build_usage_diagnostic(
+        diagnostics[:1],
+        metadata_key="user_id",
+        metadata_value="user-test",
+        group_by=None,
+        group_values=[(None, None)],
+        filter_trust_values=["fixed"],
+        start=now,
+        end=now,
+        has_more=False,
+        excessive_ratio_threshold=3.0,
+        excessive_min_sample_size=10,
+    )
+
+    assert result["aggregate"]["reservation_sample_requests"] == 10
+    assert result["aggregate"]["reserved_total_tokens"] == 5000
+    assert result["aggregate"]["actual_total_tokens"] == 1000
+    assert result["aggregate"]["released_tokens"] == 4000
+    assert result["aggregate"]["estimate_actual_ratio"] == 5.0
+    assert result["finding_counts"]["EXCESSIVE_TOKEN_RESERVATION"] == 1
+    assert "EXCESSIVE_TOKEN_RESERVATION" not in single["finding_counts"]

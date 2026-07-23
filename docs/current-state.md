@@ -94,6 +94,12 @@ client. Every actual provider call receives its own attempt ledger record. An
 invalid fallback adapter is isolated until that route is reached and cannot block
 a healthy primary route.
 
+Admission now stores a componentized token reservation. Known models use their
+`tiktoken` encoding over model-visible request fields; unknown models retain an
+explicit UTF-8 byte fallback. Output limits resolve from request, route, model,
+then global defaults. The full bounded attempt plan is still reserved up front,
+with an explicit per-attempt margin. See [Token admission reservation](token-reservation.md).
+
 Request bodies are bounded by `NORTHGATE_MAX_REQUEST_BODY_BYTES`, including
 chunked bodies. SSE `[DONE]` terminates relay processing without waiting for
 upstream EOF. Finalization creates the durable settlement event before upstream
@@ -179,9 +185,10 @@ organization/project/application/tenant/user multi-level policy subjects are not
 implemented.
 
 Routing supports ordered priorities, bounded retries, fallback, deterministic
-weights, trusted exact metadata matching, circuit breakers, and exact caching.
-Budget admission still conservatively reserves for the configured attempt plan;
-incremental reservation per retry/fallback is future work.
+weights, trusted exact metadata matching, circuit breakers, exact caching, and a
+nullable per-route default output reservation. Budget admission still
+conservatively reserves for the configured attempt plan; incremental reservation
+per retry/fallback is future work.
 
 ## Verification baseline
 
@@ -191,8 +198,8 @@ CI has separate jobs:
 - integration: PostgreSQL 17, Redis 8, Alembic upgrade, and tests marked
   `integration` with store failures configured to fail rather than skip.
 
-At this review, migration `0016` is the single Alembic head. The local suite has
-96 non-integration and 9 real-store integration tests. Counts are a snapshot, not
+At this review, migration `0017` is the single Alembic head. The local suite has
+not yet been recounted at the release boundary. Counts are a snapshot, not
 a contract; new behavior should add proportional coverage.
 
 ## Open work

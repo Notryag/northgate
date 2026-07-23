@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     price_provider: str = "openai"
     price_model: str | None = None
     policy_default_max_output_tokens: int = Field(default=4096, gt=0)
+    policy_model_max_output_tokens: dict[str, int] = Field(default_factory=dict)
+    policy_prompt_margin_percent: int = Field(default=15, ge=0, le=100)
+    policy_estimate_excess_ratio_threshold: float = Field(default=3.0, ge=1.0, le=100.0)
+    policy_estimate_excess_min_sample_size: int = Field(default=10, ge=2, le=100)
     concurrency_lease_seconds: int = Field(default=300, ge=30)
     application_key_sha256: SecretStr | None = None
     provider_base_url: str = "https://api.openai.com/v1"
@@ -76,6 +80,16 @@ class Settings(BaseSettings):
     credential_encryption_key: SecretStr | None = None
     operator_key_sha256: SecretStr | None = None
     console_directory: Path = Path("apps/console/dist")
+
+    @field_validator("policy_model_max_output_tokens")
+    @classmethod
+    def validate_model_output_defaults(cls, value: dict[str, int]) -> dict[str, int]:
+        if len(value) > 100 or any(
+            not model.strip() or len(model) > 200 or tokens < 1 or tokens > 2_000_000
+            for model, tokens in value.items()
+        ):
+            raise ValueError("policy model output defaults are invalid")
+        return value
 
 
 @lru_cache

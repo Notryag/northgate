@@ -34,6 +34,7 @@ older revision.
 | Change service boundaries or request flow | [Current state](current-state.md), [Architecture](architecture.md) |
 | Add or change a proxy endpoint | [Architecture](architecture.md), [API design](api-design.md) |
 | Add authentication, limits, or credentials | [Architecture](architecture.md), [API design](api-design.md) |
+| Change token admission or reservation | [Token admission reservation](token-reservation.md), [API design](api-design.md) |
 | Plan implementation work | [Roadmap](roadmap.md), then the affected contract pages |
 | Review architecture improvement priorities | [Architecture review](architecture-review.md), [Roadmap](roadmap.md) |
 | Change code or verification workflow | [Development workflow](development.md) |
@@ -57,6 +58,8 @@ older revision.
 - [Integration boundaries](integration-boundaries.md): ownership split with Dayboard and `north`.
 - [Integration guide](integration-guide.md): compatibility checks, canary traffic, and rollback.
 - [Operator diagnostics interface](diagnostics-interface.md): implemented shared service, REST, CLI, and read-only MCP diagnostics contract.
+- [Token admission reservation](token-reservation.md): prompt estimation,
+  output-limit precedence, reservation formula, settlement, and diagnostics.
 - [Operator CLI and MCP usage](operator-cli-and-mcp.md): installation,
   authentication, command examples, MCP client registration, and troubleshooting.
 - [Operator console](console.md): accepted management information architecture,

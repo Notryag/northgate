@@ -108,7 +108,17 @@ async def enqueue_request_settlement(
     attempt_outcome: str | None = None,
     attempt_usage: UsageResult | None = None,
     attempt_cost_microusd: int | None = None,
+    reserved_tokens: int | None = None,
 ) -> bool:
+    metric_reserved_tokens = (
+        reserved_tokens
+        if reserved_tokens is not None
+        else policy_lease.estimated_tokens
+        if policy_lease is not None
+        else None
+    )
+    if metrics is not None and metric_reserved_tokens is not None:
+        metrics.observe_token_settlement(metric_reserved_tokens, usage.total_tokens)
     if coordinator is None:
         return False
     payload: dict[str, object] = {

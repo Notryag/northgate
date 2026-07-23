@@ -84,6 +84,12 @@ async def test_policy_rejection_records_estimate_and_error_code() -> None:
     assert recorder.rejection is not None
     assert recorder.rejection["error_code"] == "TOKEN_LIMIT_EXCEEDED"
     assert recorder.rejection["estimated_tokens"] > 4096
+    assert recorder.rejection["estimated_prompt_tokens"] > 0
+    assert recorder.rejection["reserved_output_tokens"] == 4096
+    assert recorder.rejection["attempt_multiplier"] == 1
+    assert recorder.rejection["reservation_margin_tokens"] >= 16
+    assert recorder.rejection["token_estimator"] == "utf8_bytes_div_3"
+    assert recorder.rejection["output_limit_source"] == "global"
 
 
 @pytest.mark.anyio
@@ -160,6 +166,12 @@ async def test_proxy_exports_provider_usage_metrics() -> None:
         'provider="openai",type="prompt"} 7.0' in metrics.text
     )
     assert 'northgate_cache_requests_total{result="bypass"} 1.0' in metrics.text
+    assert (
+        'northgate_token_reservation_tokens_count{component="total",'
+        'estimator="utf8_bytes_div_3",output_source="global"} 1.0' in metrics.text
+    )
+    assert "northgate_token_reservation_released_tokens_count 1.0" in metrics.text
+    assert "northgate_token_reservation_actual_ratio_count 1.0" in metrics.text
 
 
 @pytest.mark.anyio

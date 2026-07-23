@@ -107,9 +107,17 @@ findings. Initial finding codes should cover:
 - `RECOVERABLE_SETTLEMENT_PENDING`;
 - `UNPROTECTED_STALE_SETTLEMENT`;
 - `STALE_CONCURRENCY_LEASE`.
+- `EXCESSIVE_TOKEN_RESERVATION` for a sufficiently large aggregate sample whose
+  known reserved-to-actual ratio exceeds the configured threshold.
 
 Findings report evidence; they must not invent usage or infer provider billing
 when usage is absent.
+
+Request and usage results also expose the componentized reservation fields
+defined in [Token admission reservation](token-reservation.md). Historical rows
+may have only `reserved_total_tokens` through the documented legacy alias.
+`actual_total_tokens`, `released_tokens`, and `estimate_actual_ratio` remain
+null when provider total usage is missing.
 
 ## CLI contract
 

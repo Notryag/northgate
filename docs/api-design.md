@@ -176,6 +176,14 @@ The response includes admission estimates, actual tokens, cached prompt tokens,
 cost when known, exact-cache status, outcome, stable error code, and `has_more`.
 It does not return metadata values, prompt or response content.
 
+Admission data includes `estimated_prompt_tokens`, `reserved_output_tokens`,
+`attempt_multiplier`, `reservation_margin_tokens`, `reserved_total_tokens`,
+`actual_total_tokens`, `released_tokens`, `estimate_actual_ratio`,
+`token_estimator`, and `output_limit_source`. Unknown historical components and
+unknown provider actuals remain null. `estimated_tokens` is retained as a legacy
+alias of the reserved total for new records. The exact formula and precedence are
+defined in [Token admission reservation](token-reservation.md).
+
 `/api/v1/diagnostics/requests/{request_id}` joins the request, ordered provider
 attempts, and redacted settlement-event progress into diagnostics schema version
 `1`. `/api/v1/diagnostics/correlated` accepts a bounded metadata filter, maximum

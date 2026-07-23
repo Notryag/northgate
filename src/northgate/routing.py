@@ -77,6 +77,7 @@ class ResolvedRoute:
     health_failure_threshold: int = 0
     health_recovery_seconds: int = 30
     health_failure_status_codes: frozenset[int] = frozenset({500, 502, 503, 504})
+    default_max_output_tokens: int | None = None
 
 
 class DatabaseRouteResolver:
@@ -162,6 +163,7 @@ class DatabaseRouteResolver:
                     health_failure_threshold=route.health_failure_threshold,
                     health_recovery_seconds=route.health_recovery_seconds,
                     health_failure_status_codes=frozenset(route.health_failure_status_codes),
+                    default_max_output_tokens=route.default_max_output_tokens,
                 )
             )
         return resolved
