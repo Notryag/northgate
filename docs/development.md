@@ -291,3 +291,26 @@ returns Dayboard to the single-tenant canary.
   upgraded to `0017` from verified backup
   `backups/northgate-20260723T030211Z.dump`; readiness, the Dayboard application
   probe, diagnostics doctor, and post-deployment ledger inspection passed.
+
+### 2026-07-23: Operator console management phase 3
+
+- Added Applications management for organizations, projects, application-key
+  issuance, caller/fixed metadata classes, trusted/legacy routing mode, one-time
+  secret display, copy, and revocation.
+- Added Provider Credentials management for project-scoped encrypted credential
+  creation, OpenAI-compatible/Azure adapter configuration, redacted route
+  references, and write-only secret rotation. Production read responses were
+  checked to contain neither plaintext nor encrypted secret fields.
+- Added a read-only Operations workspace over readiness and stale diagnostics. It
+  shows settlement backlog, recoverable versus unprotected ledgers, attempt state,
+  outbox events, and active/expired concurrency leases, with request-detail
+  navigation. Reconciliation mutations remain CLI-only.
+- Ran Console TypeScript validation and production build, Ruff and format checks,
+  112 non-integration tests, Compose validation, and production read-only API
+  contract checks. CI run `29977269636` passed quality, integration, and Console
+  jobs.
+- Deployed commit `64552cc` from checksum-verified backup
+  `backups/northgate-20260723T033335Z.dump`. Alembic remained at `0017`; readiness,
+  the Dayboard application probe, `/console/applications`, `/console/providers`,
+  `/console/operations`, and the referenced JavaScript bundle all returned HTTP
+  200. No screenshot, mobile, or visual review was performed by request.
